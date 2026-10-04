@@ -216,6 +216,7 @@
   "notes": [
     "Candidate and remote tests rerun after adding sufficient synthetic Codex/DSH fixtures.",
     "Step10 test rerun after adding public FLOW.md.",
-    "Portable smoke subset: 12/12; these are included in the 41 files, not additional coverage."
+    "Clean-checkout portable smoke subset: 8/8; these are included in the 41 files, not additional coverage.",
+    "Four additional smoke tests pass with the prepared host SDK but require the dsh-typert-protocol package."
   ]
 }
