@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Calm review mode",
+    "description": "Adds a \"Calm review mode\" agent preset whose every turn is reviewed by an independent subagent: it checks constraints, names what was done right and what was noise, and also watches what Codex is doing on this machine."
+  }
+}
