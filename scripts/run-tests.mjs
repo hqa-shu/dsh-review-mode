@@ -10,7 +10,8 @@ const integration=new Set(['a-lane','cache','candidates','command','lane-watch',
 const all=fs.readdirSync(path.join(root,'test')).filter(n=>n.endsWith('-test.mjs')).sort();
 // Explicit smoke subset. Full suites retain known snapshot failures; this is
 // deliberately not a substitute for the validation report or host acceptance.
-const portable=new Set(['panel-state','panel-quiet','panel-back','panel-reserve','panel-entry','panel-zebra','panel-scope','probe','trigger','update-signal','liveness','liveness-scope']);
+// These files pass in a clean checkout without the host-only Harness SDK.
+const portable=new Set(['panel-state','panel-back','panel-reserve','panel-entry','panel-zebra','probe','update-signal','liveness']);
 const selected=all.filter(n=> {
   const key=n.replace('-test.mjs','');
   return mode==='--portable' ? portable.has(key) : mode==='--integration' ? integration.has(key) : !integration.has(key);
