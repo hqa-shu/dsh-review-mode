@@ -1,0 +1,31 @@
+name: Bug report
+description: Report a reproducible problem in the development snapshot.
+body:
+  - type: markdown
+    attributes:
+      value: "This plugin is under development. Remove personal conversation content, credentials and private paths before submitting."
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Harness version, OS, architecture and plugin commit.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use a synthetic conversation if possible.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: State whether this was observed in the real host or a test double.
