@@ -63,7 +63,7 @@ await import('../client.js');
 if (registered === null) { console.log('FAIL  模块没注册'); process.exit(1); }
 let panel = null;
 registered.apply({
-  remote: { commands: { execute: () => Promise.resolve({ ok: true, value: undefined }) } },
+  remote: { commands: { execute: (_sessionId, command) => Promise.resolve({ ok: true, value: { commandId: 'c1', result: { kind: 'success', text: command.includes(' dir ') ? JSON.stringify({ recent: [{ id: 'z1', kind: 'dsh', title: '合成对话' }], groups: [] }) : JSON.stringify({ selected: { id: 'z1', kind: 'dsh', title: '合成对话' }, evidence: { title: '合成对话', youSaid: ['第1轮：让大家看懂'], otherSaid: ['第1轮：压到约160行'] } }) } } }) } },
   slots: { inject: (name, fn) => fn(), register: (meta, component) => { if (meta.id === 'review-mode-panel') panel = component; } },
 });
 
@@ -77,11 +77,11 @@ const collect = (node, predicate, out = []) => {
 };
 
 const CARD = (n, verdict) => ({
-  kind: 'review', at: Date.UTC(2026, 9, 3, 14, 32 - n, 0), turn: n, lane: 'me', verdict,
+  kind: 'review', targetKey: 'dsh:z1', at: Date.UTC(2026, 9, 3, 14, 32 - n, 0), turn: n, lane: 'me', verdict,
   sections: ANALYSIS_SECTIONS,
   headline: `斑马哨兵${n}_最要紧那一句`,
   dialog: [`对话哨兵${n}`], summary: `概述哨兵${n}`,
-  analysis: [`分析哨兵${n}`], advice: [`建议哨兵${n}`],
+  analysis: [`分析哨兵${n}｜依据：用户原话：「压到约160行」｜洞察：行数不代表易懂｜建议：找人试读`], advice: [`建议哨兵${n}`],
   text: `斑马哨兵${n}_最要紧那一句`,
 });
 /* 四条：左栏默认选中**最新一条**（跟随时是最后一行），所以留三条未选中的
@@ -100,7 +100,13 @@ const rowNodes = () => collect(tree, (n) => n.props?.['data-review-row'] !== und
 const rowBg = (node) => node?.props?.style?.background;
 
 render({ feed: FEED });
+collect(tree, (n) => n.props?.['data-review-direction'] === 'dsh')[0].props.onClick();
+await new Promise(resolve => setTimeout(resolve, 0));
+collect(tree, (n) => n.props?.['data-review-target'] === 'z1')[0].props.onClick();
+await new Promise(resolve => setTimeout(resolve, 0));
 const rows = rowNodes();
+check('AI 的原话即使被模型误写成用户原话，界面仍按原始材料标成 AI',
+  JSON.stringify(tree).includes('依据：对面 AI第1轮「压到约160行」'));
 check('4 条评价 = 4 行（沿用上一轮：一条一行）', rows.length === 4, `→ ${rows.length} 行`);
 check('每行仍然等高 22px（斑马纹不许破坏上一轮的版式）',
   rows.every((row) => row.props.style.height === '22px' && row.props.style.whiteSpace === 'nowrap'),

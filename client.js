@@ -107,6 +107,8 @@ window.__ModuleLoader__.load({
     const SPIN_CSS = [
       '@keyframes review-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }',
       '.review-mode-spin { animation: review-spin 1s linear infinite; }',
+      '.review-said-list::-webkit-scrollbar { width: 10px; }',
+      '.review-said-list::-webkit-scrollbar-thumb { background: var(--dsw-alias-border-l1); border-radius: 10px; }',
       '@media (prefers-reduced-motion: reduce) { .review-mode-spin { animation-duration: 3s; } }',
     ].join('\n');
 
@@ -309,18 +311,18 @@ window.__ModuleLoader__.load({
       title: '审核',
       collapse: '收起',
       expand: '展开',
-      lead: '选一个对话，我来审你 —— 只审你，不评它。',
+      lead: '先选一条对话，再选审我、审对话或审AI。',
       back: '← 返回',
       loading: '读目录…',
       evidence: '读证据…',
-      empty: '这一类里没有可审的对话。',
+      emptyDirectory: '这一类里没有可审的对话。',
       filter: '筛选原话…',
       noMatch: '没有匹配的原话。',
       qHead: '问 · 你当时说的话',
       aHead: '审核洞察',
       // **四态四句话，绝不互相冒充**（用户现场：空状态里写着「审核中…」一直不动，
       // 而评价其实写在上面 —— 用户分不清「还没开始」「正在跑」「失败了」「有结果」）。
-      empty: '还没有评价 —— 点下面任一个方向，它会自己开始、自己长出来。',
+      empty: '当前对象与侧重点还没有评价。点「开始审核」，结果会出现在这里。',
       pending: '复审进行中…复审员正在写，结果只落在这一区（不在上面的对话里）。',
       failed: '复审没有完成 —— ',
       streaming: '生成中…',
@@ -336,6 +338,11 @@ window.__ModuleLoader__.load({
       { label: '审其它 DSH 会话', note: 'DSH 里别的历史会话', kind: 'dsh' },
       { label: '审 Codex 对话', note: '你在 ChatGPT 桌面版 / Codex 里的对话', kind: 'codex' },
     ];
+    const FOCUS_OPTIONS = [
+      { lane: 'me', label: '审我', note: '看你的目标、选择与推进' },
+      { lane: 'conversation', label: '审对话', note: '看你和 AI 的整段往返' },
+      { lane: 'agent', label: '审AI', note: '看 AI 是否按要求回答' },
+    ];
 
     /**
      * 面板会话命令的命令名 —— 宿主在 `index.js` 里用**同一个名字**注册
@@ -348,6 +355,8 @@ window.__ModuleLoader__.load({
      *   - `dir <self|dsh|codex>`  用户点了方向 → 返回目录 JSON；`self` 还会由宿主立刻派复审；
      *   - `pick <kind> <id>`      用户点了某条对话 → 记下目标、开始复审、返回证据 JSON；
      *   - `ask <question>`        针对已有评价提问 → 返回回答文本。
+     *   - `advise-turn <number>` 展开一条原话后，按需生成这一条的建议。
+     *   - `advice-status <number>` 只读获取逐条建议的结果。
      * @param {string} verb - 动词。
      * @param {...string} args - 参数。
      * @returns {string} 完整命令行。
@@ -455,7 +464,28 @@ window.__ModuleLoader__.load({
       }).filter(Boolean));
     }
 
-    function insightsBlock(record) {
+    function attributedEvidence(detail, conversation) {
+      const raw = String(detail).trim();
+      if (!/^依据[:：]/.test(raw)) return raw;
+      const body = raw.replace(/^依据[:：]\s*/, '');
+      const user = Array.isArray(conversation?.youSaid) ? conversation.youSaid : [];
+      const ai = Array.isArray(conversation?.otherSaid) ? conversation.otherSaid : [];
+      if (/[「“][^」”]+[」”]/.test(body)) {
+        const cited = [...body.matchAll(/[「“]([^」”]+)[」”]/g)].map((match) => {
+          const quote = match[1];
+          const userSource = user.find(text => String(text).includes(quote));
+          const aiSource = ai.find(text => String(text).includes(quote));
+          const speaker = userSource && aiSource ? '双方' : userSource ? '用户' : aiSource ? '对面 AI' : '未核实';
+          const source = userSource && !aiSource ? String(userSource) : aiSource && !userSource ? String(aiSource) : '';
+          const round = /^第\d+轮/.exec(source)?.[0] ?? '';
+          return `${speaker}${round}「${quote}」`;
+        }).join('；');
+        return `依据：${cited}`;
+      }
+      return `依据（行为描述，待核对）：${body}`;
+    }
+
+    function insightsBlock(record, conversation) {
       const items = Array.isArray(record?.analysis) ? record.analysis.slice(0, 4) : [];
       if (items.length === 0) return null;
       return h('div', { key: 'insights', 'data-review-insights': String(items.length) }, items.map((item, index) => {
@@ -474,7 +504,7 @@ window.__ModuleLoader__.load({
             suggestion ? h('div', { key: 'suggestion', style: { marginTop: 4, fontSize:11.5, color:'var(--dsw-alias-label-secondary)' } }, `建议：${suggestion}`) : null,
           ]),
           details.length === 0 ? h('div',{key:'legacy',style:{marginTop:6}},String(item)) : null,
-          ...details.map((text, i) => h('div', { key: `d${i}`, style: { marginTop: 6, overflowWrap: 'anywhere' } }, text)),
+          ...details.map((text, i) => h('div', { key: `d${i}`, style: { marginTop: 6, overflowWrap: 'anywhere' } }, attributedEvidence(text, conversation))),
           details.length === 0 && record?.dialog?.length ? h('div', { key: 'evidence', style: { marginTop: 6 } }, `原话：${record.dialog.join('；')}`) : null,
         ].filter(Boolean));
       }));
@@ -747,18 +777,21 @@ window.__ModuleLoader__.load({
       const [tree, setTree] = React.useState(null);
       const [note, setNote] = React.useState('');
       const [picked, setPicked] = React.useState(null);
+      const [focusBusy, setFocusBusy] = React.useState(null);
+      const navigationRequest = React.useRef(0);
       const targetKey = `review-target:${sessionId}`;
       const rememberTarget = item => { try { window.localStorage?.setItem(targetKey, JSON.stringify({kind:item.kind,id:item.id,title:item.title,lane:item.lane,paused:item.paused})); } catch {} };
       React.useEffect(() => {
         let saved; try { saved = JSON.parse(window.localStorage?.getItem(targetKey) ?? 'null'); } catch {}
         let active=true;
+        const request = ++navigationRequest.current;
         queueMicrotask(()=>{
-        if (!active) return;
+        if (!active || request !== navigationRequest.current) return;
         setPicked(null);setDepth(0);setKind(null);setSelected(null);setAsked([]);
         if (preset !== 'review' || !saved?.id || !['self','dsh','codex'].includes(saved.kind)) return;
         const command = cmdLine('resume', saved.kind, saved.id, saved.lane ?? 'me',saved.paused ? 'on' : 'off');
         callCommand(sessionId, command).then(outcome=>{
-          if (!active) return;
+          if (!active || request !== navigationRequest.current) return;
           const res=commandResult(outcome,command);
           if (!res.ok) { setNote(res.why); return; }
           const result=parseJson(res.text);if(!result?.evidence)return;
@@ -795,7 +828,7 @@ window.__ModuleLoader__.load({
        * 不需要一个会 `setState` 的 effect（那种 effect 在测试的极小 React 里
        * 会同步递归重画，真实 React 里也纯属多余）。
        */
-      const seenKey = `${SEEN_KEY}:${sessionId}`;
+      const seenKey = `${SEEN_KEY}:${sessionId}:${picked?.item?.kind ?? 'none'}:${picked?.item?.id ?? 'none'}:${picked?.item?.lane ?? 'me'}`;
       const readSeenCount = () => {
         try {
           const value = Number(window.localStorage?.getItem(seenKey));
@@ -806,6 +839,50 @@ window.__ModuleLoader__.load({
       const seenCount = seen.key === seenKey ? seen.count : readSeenCount();
       /** 左栏「问」的筛选词 —— FLOW.md 第 10 步状态 3 的「＋筛选」。 */
       const [saidFilter, setSaidFilter] = React.useState('');
+      const [turnAdvice, setTurnAdvice] = React.useState({});
+      const adviceKey = (number, text) => {
+        const turn = /^第(\d+)轮：/.exec(text)?.[1] ?? null;
+        const paired = turn === null ? [] : (picked?.conversation?.otherSaid ?? [])
+          .filter(reply => String(reply).startsWith(`第${turn}轮：`));
+        return `${picked?.item?.kind ?? ''}:${picked?.item?.id ?? ''}:${picked?.item?.lane ?? 'me'}:${number}:${JSON.stringify([text, paired])}`;
+      };
+      const requestTurnAdvice = (number, text, retry = false) => {
+        const key = adviceKey(number, text);
+        if (!retry && turnAdvice[key] && turnAdvice[key].status !== 'failed') return;
+        setTurnAdvice(previous => ({ ...previous, [key]: { status: 'pending', answer: '', error: '' } }));
+        const command = cmdLine('advise-turn', number);
+        callCommand(sessionId, command).then(outcome => {
+          const result = commandResult(outcome, command);
+          const value = parseJson(result.text);
+          setTurnAdvice(previous => ({ ...previous, [key]: result.ok && value
+            ? value : { status: 'failed', answer: '', error: result.why || '逐条建议没有启动' } }));
+        });
+      };
+      React.useEffect(() => {
+        if (preset !== 'review') return undefined;
+        const prefix = `${picked?.item?.kind ?? ''}:${picked?.item?.id ?? ''}:${picked?.item?.lane ?? 'me'}:`;
+        const pending = Object.entries(turnAdvice).filter(([key, value]) => key.startsWith(prefix) && value.status === 'pending');
+        if (pending.length === 0) return undefined;
+        let alive = true;
+        const polling = new Set();
+        const check = () => {
+          for (const [key] of pending) {
+            if (polling.has(key)) continue;
+            const number = Number(key.slice(prefix.length).split(':', 1)[0]);
+            polling.add(key);
+            const command = cmdLine('advice-status', number);
+            callCommand(sessionId, command).then(outcome => {
+              if (!alive) return;
+              const result = commandResult(outcome, command);
+              const value = parseJson(result.text);
+              if (!result.ok || !value || value.status === 'pending') return;
+              setTurnAdvice(previous => ({ ...previous, [key]: value }));
+            }).finally(() => polling.delete(key));
+          }
+        };
+        const timer = setInterval(check, 3000);
+        return () => { alive = false; clearInterval(timer); };
+      }, [sessionId, preset, picked?.item?.kind, picked?.item?.id, picked?.item?.lane, turnAdvice]);
       /**
        * 左边那个对话框：**针对已有的评价**提问（「为什么这么说」「② 展开讲讲」）。
        * 它不驱动复审、不重置流；回答由宿主命令同步带回（`{kind:'success', text}`），
@@ -976,6 +1053,7 @@ window.__ModuleLoader__.load({
       // 命令不存在 / 超时 / 报错都要**立刻变成一句话**，不能静默，
       // 更不能永远停在「读目录…」。
       const chooseDirection = (value) => {
+        const request = ++navigationRequest.current;
         setKind(value);
         setDepth(1);
         setSelected(null);
@@ -983,6 +1061,7 @@ window.__ModuleLoader__.load({
         setNote(TEXT.loading);
         const command = cmdLine('dir', value);
         callCommand(sessionId, command).then((outcome) => {
+          if (request !== navigationRequest.current) return;
           const res = commandResult(outcome, command);
           if (!res.ok) {
             setTree(null);
@@ -1010,12 +1089,14 @@ window.__ModuleLoader__.load({
       // `review-mode pick`，宿主在同一个 handler 里调 `setTarget()` —— 两条路写同一份状态。
       // 复审结果只走 `reviewMode` 投影（面板），不写进对话。
       const chooseConversation = (item) => {
+        const request = ++navigationRequest.current;
         setPicked({ item, conversation: null });
         setDepth(2);
         setSelected(null);
         setNote(TEXT.evidence);
         const command = cmdLine('pick', item.kind, item.id);
         callCommand(sessionId, command).then((outcome) => {
+          if (request !== navigationRequest.current) return;
           const res = commandResult(outcome, command);
           if (!res.ok) {
             setNote(res.why);
@@ -1025,6 +1106,36 @@ window.__ModuleLoader__.load({
           const chosen={...item,...result?.selected};rememberTarget(chosen);
           setPicked({ item:chosen, conversation: result?.evidence ?? null });
           setNote('');
+        });
+      };
+
+      const requestReview = () => {
+        setNote('正在启动审核…');
+        const command = cmdLine('refresh');
+        callCommand(sessionId, command).then(outcome => {
+          const res = commandResult(outcome, command);
+          if (!res.ok) { setNote(res.why); return; }
+          const data = parseJson(res.text);
+          if (data?.evidence) setPicked(previous => previous ? { ...previous, conversation: data.evidence } : previous);
+          setNote('');
+        });
+      };
+
+      const chooseFocus = (lane) => {
+        if (focusBusy !== null) return;
+        setFocusBusy(lane);
+        setNote('正在启动所选侧重点的审核…');
+        const command = cmdLine('focus', lane);
+        callCommand(sessionId, command).then(outcome => {
+          const res = commandResult(outcome, command);
+          const data = parseJson(res.text);
+          if (res.ok && data?.selected) {
+            setPicked({ item: data.selected, conversation: data.evidence });
+            rememberTarget(data.selected);
+            setSelected(null);
+            setNote('');
+          } else setNote(res.why || '切换侧重点没有成功，请重试。');
+          setFocusBusy(null);
         });
       };
 
@@ -1069,6 +1180,18 @@ window.__ModuleLoader__.load({
         ? (probe.why === '' ? '心跳失败。' : probe.why)
         : (stale ? `最后一次成功心跳是 ${spanText(probeAge)}前，超过 ${spanText(STALE_MS)}没成功。` : '');
       const agoText = (ms) => (ms === null || !Number.isFinite(ms) ? '—' : (ms < 1500 ? '刚刚' : `${Math.round(ms / 1000)} 秒前`));
+      const autoReviewText = () => {
+        if (picked?.item?.paused) return '自动复审：已暂停';
+        if (liveStatus !== 'ok') return '自动复审：暂时无法确认触发状态';
+        if (probe.facts?.tick?.enabled === false) return '自动复审：监控已关闭';
+        const watched = probe.facts?.autoReview;
+        if (!watched || !Number.isFinite(watched.checkedAt)) return '自动复审：等待首次检查';
+        const checked = `上次检查 ${agoText(Math.max(0, clock - watched.checkedAt))}`;
+        if (!watched.triggerCount) return `自动复审：自本次选择后尚未触发 · ${checked}`;
+        const triggered = Number.isFinite(watched.lastTriggeredAt)
+          ? agoText(Math.max(0, clock - watched.lastTriggeredAt)) : '时间未知';
+        return `自动复审：自本次选择后已触发 ${watched.triggerCount} 次 · 最近 ${triggered}（新增 ${watched.lastDelta} 条用户消息）· ${checked}`;
+      };
       /**
        * 「跑不起来」时到底哪里错 —— 面板直接把宿主报的那句原话（和错误码）说出来，
        * 用户不用去翻对话日志、更不用猜。
@@ -1103,7 +1226,10 @@ window.__ModuleLoader__.load({
       // 问答条目（`kind:'qa'`）和自动评价在**同一个流**里，但「最新一张评价」只能在评价里取，
       // 否则刚问完一句，右栏那条评价的完整分析就被一条问答顶掉了。
       const activeTargetKey=picked?.item ? `${picked.item.kind}:${picked.item.id}` : null;
-      const reviews = cards.filter(card=>card?.kind!=='qa' && (!activeTargetKey || (card.targetKey ? card.targetKey===activeTargetKey : picked.item.kind==='self')));
+      const activeLane = picked?.item?.lane ?? 'me';
+      const reviews = cards.filter(card=>card?.kind!=='qa'
+        && (!activeTargetKey || (card.targetKey ? card.targetKey===activeTargetKey : picked.item.kind==='self'))
+        && (!picked?.item || (card.lane ?? 'me') === activeLane));
       const latest = reviews.length > 0 ? reviews[reviews.length - 1] : null;
 
       /* ── 问答条目：投影里的 + **命令回执的本地回显**（bug 54）────────────────
@@ -1144,7 +1270,7 @@ window.__ModuleLoader__.load({
         setSeen({ key: seenKey, count });
         try { window.localStorage?.setItem(seenKey, String(count)); } catch { /* 存不了就只在这次会话里记住 */ }
       };
-      const totalReviews = Math.max(Number(projection?.reviews) || 0, reviews.length);
+      const totalReviews = reviews.length;
       const unseen = Math.max(0, totalReviews - Math.min(seenCount, totalReviews));
       const gistOf = (item) => {
         if (item === null || item === undefined) return '';
@@ -1181,7 +1307,7 @@ window.__ModuleLoader__.load({
         if (tree === null) return line('note', TEXT.loading, '--dsw-alias-label-secondary');
         const recent = Array.isArray(tree.recent) ? tree.recent : [];
         const groups = Array.isArray(tree.groups) ? tree.groups : [];
-        if (recent.length === 0 && groups.length === 0) return line('note', TEXT.empty, '--dsw-alias-label-secondary');
+        if (recent.length === 0 && groups.length === 0) return line('note', TEXT.emptyDirectory, '--dsw-alias-label-secondary');
         // 逐层 push，避免深层嵌套括号出错（这里已经错过一次）。
         const nodes = [];
         const rowButton = (row, indent, key) => h('button', {
@@ -1247,10 +1373,12 @@ window.__ModuleLoader__.load({
       const resultsBlock = ({ withEvidence }) => {
         const tone = VERDICT[selectedCard?.verdict] ?? VERDICT.unknown;
         // 流式半成品优先：复审员还在写的时候，右栏就照它一行一行画。
-        const stream = projection?.stream ?? null;
+        const stream = projection?.stream?.lane === activeLane
+          && (!projection.stream.targetKey || projection.stream.targetKey === activeTargetKey)
+          ? projection.stream : null;
         // 进行中 / 失败也来自投影（宿主真的立过标记），不是客户端猜的。
-        const pending = projection?.pending ?? null;
-        const failure = projection?.failure ?? null;
+        const pending = projection?.pending?.lane === activeLane ? projection.pending : null;
+        const failure = projection?.failure?.lane === activeLane ? projection.failure : null;
         const live = stream !== null && stream !== undefined;
         const generating = live || (pending !== null && pending !== undefined);
         const heading = `审核结果 · ${reviews.length} 条${generating ? '（正在生成…）' : ''}`;
@@ -1299,7 +1427,13 @@ window.__ModuleLoader__.load({
           line('insight-head', `洞察${selectedCard?.lane ? ' · '+({me:'审我',conversation:'审对话',agent:'审AI'}[selectedCard.lane] ?? '') : ''} · 点击一条展开依据和做法`, '--dsw-alias-label-tertiary', 11.5),
           pending ? line('working','新审核正在生成；仍可查看这条评价','--dsw-alias-label-secondary') : null,
           failure ? line('failed',String(failure.message ?? '审核未完成'),'--dsw-alias-state-error-primary') : null,
-          selectedCard ? insightsBlock(selectedCard) : answerBlock(null, streamForSelected, pending, failure, tone),
+          selectedCard ? insightsBlock(selectedCard, picked?.conversation) : answerBlock(null, streamForSelected, pending, failure, tone),
+          !selectedCard && !generating && !failure && picked ? h('button', {
+            key: 'start-empty', type: 'button', 'data-review-start': '1', onClick: requestReview,
+            style: { marginTop: 8, padding: '7px 12px', cursor: 'pointer', fontFamily: 'inherit',
+              border: '1px solid var(--dsw-alias-brand-primary)', borderRadius: 7,
+              background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-brand-primary)', fontWeight: 600 },
+          }, '开始审核') : null,
           // 问答条目**不在这边**：它长在左栏那个提问框下面（bug 54），
           // 否则回答会掉在右栏一长段分析的最底下、滚不到就以为「什么都没显示」。
         ]);
@@ -1317,10 +1451,25 @@ window.__ModuleLoader__.load({
         }, [
           noteLine,
           withEvidence && picked ? h('div',{key:'target',style:{fontSize:11.5,lineHeight:'20px',marginBottom:6}},[
-            h('div',{key:'title'},`对象：${picked.item?.title ?? '本会话'}`),
-            ...[['me','审我'],['conversation','审对话'],['agent','审AI']].map(([lane,label])=>h('button',{key:lane,type:'button','aria-pressed':(picked.item?.lane ?? 'me')===lane,onClick:()=>{const cmd=cmdLine('focus',lane);callCommand(sessionId,cmd).then(outcome=>{const res=commandResult(outcome,cmd),data=parseJson(res.text);if(res.ok&&data?.selected){setPicked({item:data.selected,conversation:data.evidence});rememberTarget(data.selected);}else setNote(res.why);});},style:{fontSize:11.5,marginRight:4,padding:'2px 7px',cursor:'pointer',borderRadius:6,border:'1px solid var(--dsw-alias-border-l1)',background:(picked.item?.lane ?? 'me')===lane ? 'var(--dsw-alias-bg-layer-3)' : 'transparent',color:'var(--dsw-alias-label-primary)'}},label)),
+            h('div',{key:'title'},`审核对象：${picked.item?.title ?? '本会话'}`),
+            h('div', {key:'current-focus','data-review-current-focus':activeLane,
+              style:{fontWeight:700,color:'var(--dsw-alias-brand-primary)',margin:'2px 0 5px'}},
+              `当前侧重点：${FOCUS_OPTIONS.find(option => option.lane === activeLane)?.label ?? '审我'} · ${FOCUS_OPTIONS.find(option => option.lane === activeLane)?.note ?? ''}`),
+            ...FOCUS_OPTIONS.map(({lane,label,note})=>{
+              const isCurrent = activeLane === lane;
+              return h('button',{key:lane,type:'button','aria-pressed':isCurrent,
+                'data-review-focus':lane,'data-review-focus-selected':isCurrent ? lane : undefined,
+                title:`${label}：${note}。点击后立即审核`, disabled:focusBusy!==null,
+                onClick:()=>chooseFocus(lane),
+                style:{fontSize:11.5,fontWeight:isCurrent ? 700 : 400,marginRight:4,padding:'3px 8px',cursor:'pointer',borderRadius:6,
+                  border:`1px solid var(${isCurrent ? '--dsw-alias-brand-primary' : '--dsw-alias-border-l1'})`,
+                  background:isCurrent ? 'var(--dsw-alias-interactive-bg-hover-solid)' : 'transparent',
+                  color:isCurrent ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-primary)'}},
+                `${isCurrent ? '✓ ' : ''}${label}`);
+            }),
             h('button',{key:'pause',type:'button',onClick:()=>{const cmd=cmdLine('pause',picked.item?.paused ? 'off':'on');callCommand(sessionId,cmd).then(outcome=>{const res=commandResult(outcome,cmd),data=parseJson(res.text);if(res.ok&&data?.selected){setPicked(p=>({...p,item:data.selected}));rememberTarget(data.selected);}else setNote(res.why);});},style:{fontSize:11.5,padding:'2px 7px',cursor:'pointer'}},picked.item?.paused ? '恢复监控' : '暂停监控'),
-            h('div',{key:'status',style:{color:'var(--dsw-alias-label-secondary)'}},picked.item?.paused ? '自动监控已暂停；仍可手动重新审核' : '有新用户消息时自动审核；切换侧重点后可点重新审核'),
+            h('div',{key:'status','data-review-auto-status':'1',style:{color:'var(--dsw-alias-label-secondary)'}},autoReviewText()),
+            h('div',{key:'hint',style:{color:'var(--dsw-alias-label-secondary)'}},'点上面的侧重点可手动审核；新用户消息会触发自动复审。评价结果显示在下方。'),
           ]) : null,
           h('div', {
             key: 'md', 'data-review-master': '1',
@@ -1339,9 +1488,64 @@ window.__ModuleLoader__.load({
       const evidenceBlock = () => {
         const allSaid = picked?.conversation?.youSaid ?? [];
         const needle = saidFilter.trim().toLowerCase();
-        const said = needle === ''
-          ? allSaid
-          : allSaid.filter((text) => String(text).toLowerCase().includes(needle));
+        const said = allSaid.map((text, index) => ({ text: String(text), number: index + 1 }))
+          .filter(({ text }) => needle === '' || text.toLowerCase().includes(needle))
+          .reverse();
+        const preview = (text) => {
+          const singleLine = text.replace(/\s+/g, ' ').trim();
+          return singleLine.length > 76 ? `${singleLine.slice(0, 76)}…` : singleLine;
+        };
+        const saidCard = ({ text, number }) => {
+          const advice = turnAdvice[adviceKey(number, text)];
+          return h('details', {
+          key: `said-${number}`, 'data-review-said-item': String(number),
+          onToggle: event => { if (event?.currentTarget?.open) requestTurnAdvice(number, text); },
+          style: {
+            border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 8,
+            background: number % 2 === 0 ? 'var(--dsw-alias-bg-layer-2)' : 'transparent',
+            flex: 'none',
+            overflow: 'hidden',
+          },
+        }, [
+          h('summary', {
+            key: 'preview', 'data-review-said-summary': String(number),
+            title: `第 ${number} 条原话`,
+            style: {
+              display: 'flex', alignItems: 'baseline', gap: 8, cursor: 'pointer',
+              padding: '8px 10px', lineHeight: '1.5', listStyle: 'none',
+            },
+          }, [
+            h('span', { key: 'number', style: {
+              flex: 'none', fontWeight: 700, color: 'var(--dsw-alias-brand-primary)',
+            } }, `第 ${number} 条`),
+            h('span', { key: 'text', style: {
+              minWidth: 0, flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap', color: 'var(--dsw-alias-label-primary)',
+            } }, preview(text)),
+            h('span', { key: 'arrow', 'aria-hidden': true, style: {
+              flex: 'none', color: 'var(--dsw-alias-label-tertiary)',
+            } }, '全文'),
+          ]),
+          h('div', { key: 'full', 'data-review-said-full': String(number), style: {
+            borderTop: '1px solid var(--dsw-alias-border-l1)', padding: '9px 12px',
+            lineHeight: '1.7', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+            color: 'var(--dsw-alias-label-primary)',
+          } }, text),
+          h('div', { key: 'advice', 'data-review-turn-advice': String(number), style: {
+            borderTop: '1px solid var(--dsw-alias-border-l1)', padding: '8px 12px',
+            lineHeight: '1.6', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'pre-wrap',
+          } }, [
+            h('strong', { key: 'label', style: { color: 'var(--dsw-alias-label-primary)' } }, '这一条的建议 · '),
+            advice?.status === 'ready' ? advice.answer
+              : advice?.status === 'failed' ? `生成失败：${advice.error || '未知原因'}`
+                : advice?.status === 'pending' ? '正在生成…' : '展开后开始生成。',
+            advice?.status === 'failed' ? h('button', { key: 'retry', type: 'button',
+              'data-review-turn-advice-retry': String(number), onClick: () => requestTurnAdvice(number, text, true),
+              style: { marginLeft: 8, cursor: 'pointer' },
+            }, '重试') : null,
+          ]),
+        ]);
+        };
         const askBox = () => h('div', { key: 'ask', style: { marginTop: 8, borderTop: '1px solid var(--dsw-alias-border-l1)', paddingTop: 6 } }, [
           line('ah2', '问 · 针对这条评价', '--dsw-alias-label-tertiary', 11.5),
           h('div', { key: 'askrow', style: { display: 'flex', gap: 6, marginTop: 4 } }, [
@@ -1393,9 +1597,16 @@ window.__ModuleLoader__.load({
               fontFamily: 'inherit', fontSize: 11.5, lineHeight: '17px',
             },
           }),
-          ...(said.length === 0
-            ? [line('qe', allSaid.length === 0 ? '（没读到你说的话）' : TEXT.noMatch, '--dsw-alias-label-tertiary')]
-            : said.map((text, index) => line(`q${index}`, text, '--dsw-alias-label-primary'))),
+          allSaid.length > 0 ? line('said-count', `原话 ${said.length} / ${allSaid.length} 条 · 最新在上，向下滚动看更早的`, '--dsw-alias-label-tertiary', 11) : null,
+          said.length === 0
+            ? line('qe', allSaid.length === 0 ? '（没读到你说的话）' : TEXT.noMatch, '--dsw-alias-label-tertiary')
+            : h('div', { key: 'said-list', className: 'review-said-list', 'data-review-said-list': '1',
+              role: 'region', 'aria-label': '原话列表，最新在上，向下滚动看更早的', tabIndex: 0,
+              style: {
+              display: 'flex', flexDirection: 'column', gap: 7, marginTop: 7,
+              maxHeight: 'min(48vh, 420px)', minHeight: 0, overflowY: 'auto',
+              overscrollBehavior: 'contain', scrollbarGutter: 'stable', paddingRight: 5,
+            } }, said.map(saidCard)),
           askBox(),
         ].filter(Boolean));
       };
@@ -1430,10 +1641,17 @@ window.__ModuleLoader__.load({
       const VIEW_NAMES = ['pick', 'list', 'results'];
       const view = VIEW_NAMES[depth] ?? 'pick';
       const goBack = () => {
+        ++navigationRequest.current;
         // 一层一层往上退；根视图（depth 0）**永远不退**，所以不可能退进死路。
         if (depth <= 0) {
           setDepth(0);
           setSelected(null);
+          return;
+        }
+        // 恢复过的目标没有缓存目录；返回时重新读取，才能真正选另一条会话。
+        if (depth === 2 && (kind === 'dsh' || kind === 'codex')) {
+          setPicked(null);
+          chooseDirection(kind);
           return;
         }
         const up = depth === 2 && (kind === 'self' || kind === null) ? 0 : depth - 1;
@@ -1441,6 +1659,7 @@ window.__ModuleLoader__.load({
         setSelected(null);
         setNote('');
         if (up < 2) setPicked(null);
+        if (up === 0) { setKind(null); setTree(null); }
       };
       const crumbs = picked?.item?.title ?? (depth === 1 ? (kind === 'dsh' ? 'DSH 会话' : 'Codex 对话') : '');
       const backLabel = crumbs === '' ? TEXT.back : `${TEXT.back} ${crumbs}`;
@@ -1480,7 +1699,7 @@ window.__ModuleLoader__.load({
             }, TEXT.back)
           : null,
         h('span', { key: 'sp', style: { flex: '1 1 auto', minWidth: 0 } }),
-        picked && !projection?.pending && !projection?.stream ? h('button',{key:'refresh',type:'button',onClick:()=>{const cmd=cmdLine('refresh');callCommand(sessionId,cmd).then(outcome=>{const res=commandResult(outcome,cmd);if(!res.ok)setNote(res.why);else{const data=parseJson(res.text);if(data?.evidence)setPicked(p=>({...p,conversation:data.evidence}));setNote('');}});},style:{fontSize:11.5,padding:'3px 7px',cursor:'pointer',borderRadius:6,border:'1px solid var(--dsw-alias-border-l1)',background:'var(--dsw-alias-bg-layer-2)',color:'var(--dsw-alias-label-primary)'}},'重新审核'):null,
+        picked && !projection?.pending && !projection?.stream ? h('button',{key:'refresh',type:'button','data-review-refresh':'1',onClick:requestReview,style:{fontSize:11.5,padding:'3px 7px',cursor:'pointer',borderRadius:6,border:'1px solid var(--dsw-alias-border-l1)',background:'var(--dsw-alias-bg-layer-2)',color:'var(--dsw-alias-label-primary)'}},reviews.length===0 ? '开始审核' : '重新审核'):null,
         projection?.pending || projection?.stream ? h('button',{
           key:'stop',type:'button','data-review-stop':'1',
           onClick:()=>{const cmd=cmdLine('stop');callCommand(sessionId,cmd).then(outcome=>{const result=commandResult(outcome,cmd);setNote(result.ok ? result.text : result.why);});},
@@ -1506,7 +1725,7 @@ window.__ModuleLoader__.load({
        * 它说的是**最新那条的要点**，不是光一个数字；点它就等于「看过了」：
        * 记下已读条数、展开面板、把结果区滚回顶部。所以它**不会常亮**。
        */
-      const updateBar = unseen === 0 ? null : h('button', {
+      const updateBar = depth !== 2 || !picked || unseen === 0 ? null : h('button', {
         key: 'update',
         type: 'button',
         'data-review-update': String(unseen),
@@ -1551,8 +1770,8 @@ window.__ModuleLoader__.load({
           if (unseen > 0 && Number(event?.target?.scrollTop ?? 1) <= 4) acknowledge(reviews.length);
         },
         // 面板是**满高的一列**，所以结果区靠 flex 撑开（不再是固定高度）。
-        style: { flex: '1 1 auto', minHeight: 0, overflowY: depth === 2 ? 'hidden' : 'auto', overscrollBehavior: 'contain', padding: '8px 10px' },
-      }, [depth === 2 ? null : resultsBlock({ withEvidence: false }), bodyFor()].filter(Boolean)) : null;
+        style: { flex: '1 1 auto', minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '8px 10px' },
+      }, [bodyFor()]) : null;
 
       // **D. 一行诊断**：浏览器到底看到了什么。用户可以直接念出来报告，
       // 不用开发者工具就能证实/证伪「第三方插件的远程通道不存在」这个判断。

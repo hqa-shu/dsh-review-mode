@@ -1878,6 +1878,20 @@ export function apply(ctx, config) {
   const watchCounts = new WeakMap();
   const WATCH_SCAN = 1000;
 
+  function rememberWatch(parent, key, count, triggered = false, delta = 0, fromTick = true) {
+    const previous = watchCounts.get(parent);
+    const sameTarget = previous?.key === key;
+    const now = Date.now();
+    const next = {
+      key, count, checkedAt: fromTick ? now : (sameTarget ? previous.checkedAt ?? null : null),
+      triggerCount: (sameTarget ? previous.triggerCount ?? 0 : 0) + (triggered ? 1 : 0),
+      lastTriggeredAt: triggered ? now : (sameTarget ? previous.lastTriggeredAt ?? null : null),
+      lastDelta: triggered ? delta : (sameTarget ? previous.lastDelta ?? 0 : 0),
+    };
+    watchCounts.set(parent, next);
+    return next;
+  }
+
   /**
    * 解析要点名的 rollout。点选的目标缓存文件路径，之后每 tick 不再走目录。
    *
@@ -1990,8 +2004,8 @@ export function apply(ctx, config) {
       starting.then?.(late => { if (controller.signal.aborted) void late?.dispose?.().catch?.(() => {}); }, () => {});
       run = await abortable(starting, controller.signal);
     } catch (error) {
-      // 起都起不来：面板必须说「失败 + 真因」，不能继续显示空状态/进行中。
-      if (directedRuns.get(parent) === ticket) publishReviewState(parent, 'failed', { lane, label, at: Date.now(), message: errorText(error) });
+      // 主动停止和切换目标是正常操作，不应留下红色失败状态。
+      if (directedRuns.get(parent) === ticket) publishReviewState(parent, controller.signal.aborted && !String(controller.signal.reason?.message ?? '').startsWith('审核超时') ? 'stopped' : 'failed', { lane, label, at: Date.now(), message: errorText(error) });
       clearTimeout(timeout);
       if (directedRuns.get(parent) === ticket) directedRuns.delete(parent);
       throw error;
@@ -2015,7 +2029,7 @@ export function apply(ctx, config) {
       }
       return parsed;
     } catch (error) {
-      if (directedRuns.get(parent) === ticket) publishReviewState(parent, 'failed', { lane, label, at: Date.now(), message: errorText(error) });
+      if (directedRuns.get(parent) === ticket) publishReviewState(parent, controller.signal.aborted && !String(controller.signal.reason?.message ?? '').startsWith('审核超时') ? 'stopped' : 'failed', { lane, label, at: Date.now(), message: errorText(error) });
       throw error;
     } finally {
       clearTimeout(timeout);
@@ -2040,9 +2054,8 @@ export function apply(ctx, config) {
     const session = parent?.session;
     if (typeof session?.append !== 'function') return false;
     try {
-      const text = form === 'pending'
-        ? `（复审进行中：${review.label}）`
-        : `（复审失败：${review.message}）`;
+      const text = form === 'pending' ? `（复审进行中：${review.label}）`
+        : form === 'stopped' ? '（复审已停止）' : `（复审失败：${review.message}）`;
       appendReviewSurfaceOnly(parent, form, review, text);
       return true;
     } catch (error) {
@@ -2067,7 +2080,7 @@ export function apply(ctx, config) {
       try {
         const evidence=target.kind==='self' ? evidenceFromEvents(parent.session.snapshotEvents(),target.lane) : conversationEvidence(target.kind,target.id,target.lane);
         const count=target.kind==='codex' ? Number(String(evidence.stats).match(/你说 (\d+) 条/)?.[1] ?? evidence.youSaid.length) : evidence.youSaid.length;
-        watchCounts.set(parent,{key:`${target.kind}:${target.id}:${target.lane}`,count});
+        rememberWatch(parent,`${target.kind}:${target.id}:${target.lane}`,count,false,0,false);
       }catch{}
     }
     const fire = () => runDirectedReview(parent, job);
@@ -2162,10 +2175,11 @@ export function apply(ctx, config) {
         const key=`${picked.kind}:${picked.id}:${picked.lane}`;
         const count=picked.kind==='codex' ? Number(String(evidence.stats).match(/你说 (\d+) 条/)?.[1] ?? evidence.youSaid.length) : evidence.youSaid.length;
         const previous=watchCounts.get(parent);
-        watchCounts.set(parent,{key,count});
+        const triggered=Boolean(previous && previous.key===key && count>previous.count);
+        rememberWatch(parent,key,count,triggered,triggered ? count-previous.count : 0);
         liveness.targetId=picked.id;
         // First sight after selection/restart only seeds the cursor; manual selection already reviewed.
-        if(!previous || previous.key!==key || count<=previous.count)continue;
+        if(!triggered)continue;
         void startPanelReview(parent,{lane:picked.lane,promptText:renderEvidencePrompt(evidence,picked.lane),label:`审核 · ${LANE_LABELS[picked.lane]} · ${clip(evidence.title,40)}`});
       }
     } catch (error) {
@@ -2177,6 +2191,88 @@ export function apply(ctx, config) {
   };
   const watchTimer = setInterval(() => { void watchOnce(); }, cfg.watchIntervalMs);
   ctx.effect(() => () => clearInterval(watchTimer), 'review-mode.watch()');
+
+  // 单条建议只在用户展开原话时派单；命令立即回执，客户端再读状态，避免 4 秒超时。
+  const turnAdviceJobs = new Map();
+  function turnAdviceCommand(parent, verb, rawNumber) {
+    if (!parent) return {kind:'error',text:'没有活着的审核会话'};
+    const target=currentTarget(parent.id);
+    if (!target) return {kind:'error',text:'请先选择审核对象'};
+    const number=Number(rawNumber);
+    if (!Number.isSafeInteger(number) || number < 1 || number > 10000) return {kind:'error',text:'原话编号无效'};
+    const key=`${target.kind}:${target.id}:${target.lane}:${number}`;
+    let jobs=turnAdviceJobs.get(parent);
+    if (!jobs) { jobs=new Map();turnAdviceJobs.set(parent,jobs); }
+    const existing=jobs.get(key);
+    const snapshot=(entry)=>({status:entry?.status ?? 'idle',number,answer:entry?.answer ?? '',error:entry?.error ?? ''});
+    if (verb==='advice-status') return {kind:'success',text:JSON.stringify(snapshot(existing))};
+
+    const evidence=target.kind==='self'
+      ? evidenceFromEvents(parent.session.snapshotEvents(),target.lane)
+      : conversationEvidence(target.kind,target.id,target.lane);
+    const utterance=String(evidence.youSaid?.[number-1] ?? '').trim();
+    if (!utterance) return {kind:'error',text:'这条原话已不存在，请刷新审核对象'};
+    const turn=/^第(\d+)轮：/.exec(utterance)?.[1] ?? null;
+    const paired=turn===null ? [] : (evidence.otherSaid ?? [])
+      .filter(text=>String(text).startsWith(`第${turn}轮：`));
+    const digest=createHash('sha256').update(JSON.stringify([utterance,paired])).digest('hex').slice(0,16);
+    if (existing?.digest===digest && existing.status!=='failed') return {kind:'success',text:JSON.stringify(snapshot(existing))};
+    existing?.controller?.abort(new Error('原话内容已变化'));
+    const controller=new AbortController();
+    const entry={status:'pending',number,digest,answer:'',error:'',controller};
+    jobs.set(key,entry);
+    // 只保留最近 30 条建议；不丢正在生成的条目。
+    for (const [oldKey,old] of jobs) {
+      if (jobs.size<=30) break;
+      if (old.status!=='pending') jobs.delete(oldKey);
+    }
+
+    const pairText=paired.length>0
+      ? paired.map(text=>`- ${String(text).slice(0,1800)}`).join('\n')
+      : '未能从日志可靠配对这一轮的 AI 回复；不要猜测它说了什么。';
+    const prompt=[
+      '你是审核面板的逐条建议员。用户主动打开一条原话，只分析这一条，不总结整段会话。',
+      `当前侧重点：${LANE_LABELS[target.lane] ?? '审我'}。`,
+      `被审对象：${evidence.title}。原话编号：${number}${turn===null ? '' : `，日志轮次：${turn}`}。`,
+      '## 用户这一条原话（唯一的主证据）',utterance.slice(0,6000),
+      '## 日志里能可靠配对的同轮 AI 回复',pairText,
+      '## 输出要求',
+      '只给这条对话 1 到 2 项具体建议，先写“观察：”，再写“建议：”。',
+      '审我侧重用户表达和推理；审AI侧重 AI 对这条请求的回应；审对话侧重双方往返。',
+      '没有可靠配对的 AI 回复时，只评论用户原话，并说明无法判断 AI 是否回应得当。',
+      '不得把推测当成用户原话，不得引用其他轮次。总共不超过 180 个汉字。',
+    ].join('\n');
+    const fire=async()=>{
+      let run;
+      const timer=setTimeout(()=>controller.abort(new Error('逐条建议超时，请重试')),cfg.reviewTimeoutMs);
+      try {
+        const starting=ctx.subagents.start(cfg.provider,{
+          label:`逐条建议 · 第 ${number} 条`,prompt:[{type:'text',text:prompt}],parent,
+          signal:controller.signal,toolFilter:reviewerToolFilter(),
+          ...reviewerAgentOptions(parent,liveness),
+        });
+        starting.then?.(late=>{if(controller.signal.aborted)void late?.dispose?.().catch?.(()=>{});},()=>{});
+        run=await abortable(starting,controller.signal);
+        const result=await abortable(run.result,controller.signal);
+        const answer=(contentText(result?.output)||String(result?.diagnostic??'')).trim();
+        if (!answer) throw new Error('建议员没有输出内容');
+        if (jobs.get(key)===entry) {entry.status='ready';entry.answer=answer.slice(0,1200);}
+      } catch(error) {
+        if (jobs.get(key)===entry) {entry.status='failed';entry.error=errorText(error).slice(0,200);}
+      } finally {
+        clearTimeout(timer);
+        await run?.dispose?.().catch?.(()=>{});
+      }
+    };
+    try {
+      const dispatched=typeof ctx.agents?.withoutInitiator==='function'
+        ? ctx.agents.withoutInitiator(fire) : fire();
+      void Promise.resolve(dispatched).catch(error=>{
+        if(jobs.get(key)===entry){entry.status='failed';entry.error=errorText(error).slice(0,200);}
+      });
+    } catch(error) {entry.status='failed';entry.error=errorText(error).slice(0,200);}
+    return {kind:'success',text:JSON.stringify(snapshot(entry))};
+  }
 
   /* ── 面板按钮的宿主入口：一条**会话命令** ──────────────────────────
    *
@@ -2201,10 +2297,16 @@ export function apply(ctx, config) {
         definitionId: '@local/dsh-review-mode#panel',
         name: 'review-mode',
         description: '审核面板的按钮入口：读目录 / 选中一条对话 / 针对评价提问 / 活性心跳',
-        input: { hint: 'dir <self|dsh|codex> | pick <kind> <id> | ask <question> | ping' },
+        input: { hint: 'dir <self|dsh|codex> | pick <kind> <id> | advise-turn <number> | advice-status <number> | ask <question> | ping' },
         handler: (invocation) => runPanelCommand(ctx, invocation?.agent, invocation?.rawInput, liveness, {
           // 复审**由宿主自己派**（和监控器同一条 `runDirectedReview` 管线），不唤醒主 Agent。
           startReview: (job) => startPanelReview(invocation?.agent, job),
+          turnAdvice: (agent,verb,number) => turnAdviceCommand(agent,verb,number),
+          getAutoReview: (agent, target) => {
+            const watched = agent ? watchCounts.get(agent) : null;
+            const key = target ? `${target.kind}:${target.id}:${target.lane}` : null;
+            return key !== null && watched?.key === key ? watched : null;
+          },
           stopReview: () => {
             directedRuns.get(invocation?.agent)?.controller.abort(new Error('已停止本次审核'));
             return {kind:'success',text:'已停止本次审核'};
@@ -2243,6 +2345,8 @@ export function apply(ctx, config) {
   ctx.on('agent/disposed', ({ agent }) => {
     directedRuns.get(agent)?.controller.abort(new Error('agent disposed'));
     directedRuns.delete(agent);
+    for(const entry of turnAdviceJobs.get(agent)?.values() ?? [])entry.controller?.abort(new Error('agent disposed'));
+    turnAdviceJobs.delete(agent);
     const controller = inflight.get(agent);
     if (controller !== undefined) {
       inflight.delete(agent);
@@ -2258,6 +2362,8 @@ export function apply(ctx, config) {
       inflight.clear();
       for(const ticket of directedRuns.values())ticket.controller.abort(new Error('review-mode unloaded'));
       directedRuns.clear();
+      for(const jobs of turnAdviceJobs.values())for(const entry of jobs.values())entry.controller?.abort(new Error('review-mode unloaded'));
+      turnAdviceJobs.clear();
     },
     'review-mode.teardown()',
   );
@@ -2288,6 +2394,9 @@ function foldReviewMessage(state, message) {
   if (message.source.form === 'failed') {
     const failure = normalizeFailure(message.source.review);
     return failure === null ? state : { ...state, failure, pending: null, stream: null };
+  }
+  if (message.source.form === 'stopped') {
+    return { ...state, pending: null, stream: null, failure: null };
   }
   // 「针对评价的提问」的回答：进**同一个流**，但 `kind: 'qa'` 标得清清楚楚，
   // 一眼能分辨它和自动生成的评价。
@@ -3066,6 +3175,14 @@ function panelPing(liveness, ownerId) {
         ageMs: lastTickAt === null ? null : Math.max(0, now - lastTickAt),
         count: Number.isFinite(snapshot.tickCount) ? snapshot.tickCount : 0,
       },
+      // 只记录当前审核对象和侧重点的消息边沿；手动点击不会增加 triggerCount。
+      autoReview: snapshot.autoReview === null || snapshot.autoReview === undefined ? null : {
+        checkedAt: snapshot.autoReview.checkedAt,
+        observedMessages: snapshot.autoReview.count,
+        triggerCount: snapshot.autoReview.triggerCount,
+        lastTriggeredAt: snapshot.autoReview.lastTriggeredAt,
+        lastDelta: snapshot.autoReview.lastDelta,
+      },
       // 最近一次真实扫描的规模 —— 面板上「上次扫描 N 条对话」就是它。
       scan: {
         at: scanAt,
@@ -3173,7 +3290,9 @@ function runPanelCommand(ctx, agent, rawInput, liveness, deps) {
       // 所以只能在这里按需折；只读内存快照，零文件系统调用。
       const own=panelOutcomes.get(agent) ?? {outcomeFoldAt:0,turnOutcome:null};
       noteTurnOutcome(agent,own);panelOutcomes.set(agent,own);
-      return panelPing({...liveness,turnOutcome:own.turnOutcome},agent?.id);
+      const target=currentTarget(agent?.id);
+      return panelPing({...liveness,turnOutcome:own.turnOutcome,
+        autoReview: deps?.getAutoReview?.(agent,target) ?? null},agent?.id);
     }
     if (verb === 'dir') return panelDir(agent, parts[1], deps?.startReview);
     if (verb === 'resume') {
@@ -3198,7 +3317,14 @@ function runPanelCommand(ctx, agent, rawInput, liveness, deps) {
       if(verb==='focus' && target.lane!==parts[1])deps?.stopReview?.();
       const selected=setTarget({...target,...(verb==='pause' ? {paused:parts[1]!=='off'} : {lane:parts[1]})});
       const evidence=selected.kind==='self' ? evidenceFromEvents(agent.session.snapshotEvents(),selected.lane) : conversationEvidence(selected.kind,selected.id,selected.lane);
-      return {kind:'success',text:JSON.stringify({selected,evidence})};
+      if (verb === 'focus' && typeof deps?.startReview === 'function') {
+        deps.startReview({
+          lane: selected.lane,
+          promptText: renderEvidencePrompt(evidence, selected.lane),
+          label: `审核 · ${LANE_LABELS[selected.lane]} · ${clip(evidence.title, 40)}`,
+        });
+      }
+      return {kind:'success',text:JSON.stringify({selected,evidence,started:verb==='focus'})};
     }
     if (verb === 'refresh') {
       const target=currentTarget(agent?.id);
@@ -3208,6 +3334,7 @@ function runPanelCommand(ctx, agent, rawInput, liveness, deps) {
     if (verb === 'pick') return panelPick(agent, parts[1], parts[2], deps?.startReview);
     if (verb === 'ask') return panelAsk(ctx, agent, parts.slice(1).join(' '));
     if (verb === 'ask-card') return panelAsk(ctx, agent, parts.slice(3).join(' '), decodeURIComponent(parts[1] ?? ''), parts[2]);
+    if (verb === 'advise-turn' || verb === 'advice-status') return deps?.turnAdvice?.(agent,verb,parts[1]) ?? {kind:'error',text:'当前宿主不支持逐条建议'};
     if (verb === 'stop') return deps?.stopReview?.() ?? {kind:'error',text:'当前宿主不支持停止审核'};
     return { kind: 'error', text: `未知的面板动词：${verb || '(空)'}` };
   } catch (error) {

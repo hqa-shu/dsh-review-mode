@@ -179,8 +179,8 @@ const indexMod = await import(indexPath.pathname);
 
 {
   const filterSites = [...indexSource.matchAll(/toolFilter\s*:/g)].length;
-  check('B1 扫描非空转：`index.js` 里确实有 2 个 `toolFilter`（两个派单点）',
-    filterSites === 2, `sites=${filterSites}`);
+  check('B1 扫描非空转：`index.js` 里确实有 3 个 `toolFilter`（整段复审、定向复审、逐条建议）',
+    filterSites === 3, `sites=${filterSites}`);
   check('B1 扫描非空转：`reviewer.js` 里确实有 1 个代码里的 `ctx.tools.restrict(`',
     [...reviewerSource.matchAll(/ctx\.tools\.restrict\s*\(/g)].length === 1,
     `sites=${[...reviewerSource.matchAll(/ctx\.tools\.restrict\s*\(/g)].length}`);
@@ -200,16 +200,16 @@ const indexMod = await import(indexPath.pathname);
     toolFilterNames(indexSource).length === 0
     && toolFilterNames(`${indexSource}\ntoolFilter: { allow: ['read'] }`).length === 1);
 
-  // 两个派单点必须**共用同一个来源**，否则又会只修一条、漏掉另一条。
+  // 三个派单点必须**共用同一个来源**，否则又会只修一条、漏掉另一条。
   const sharedCalls = [...indexSource.matchAll(/toolFilter\s*:\s*reviewerToolFilter\s*\(\s*\)/g)].length;
   const definitions = [...indexSource.matchAll(/function\s+reviewerToolFilter\s*\(/g)].length;
-  check('B4 两个派单点共用同一个过滤器来源（1 处定义 + 2 处调用）',
-    sharedCalls === 2 && definitions === 1, `calls=${sharedCalls} defs=${definitions}`);
+  check('B4 三个派单点共用同一个过滤器来源（1 处定义 + 3 处调用）',
+    sharedCalls === 3 && definitions === 1, `calls=${sharedCalls} defs=${definitions}`);
   check('B4 反向变异：把其中一处换回内联字面量，共有来源的判据必须变红',
-    sharedCalls === 2 && definitions === 1
-    && [...`${indexSource}\ntoolFilter: { allow: ['read'] }`.matchAll(/toolFilter\s*:\s*reviewerToolFilter\s*\(\s*\)/g)].length === 2
+    sharedCalls === 3 && definitions === 1
+    && [...`${indexSource}\ntoolFilter: { allow: ['read'] }`.matchAll(/toolFilter\s*:\s*reviewerToolFilter\s*\(\s*\)/g)].length === 3
     && [...`${indexSource.replace(/toolFilter\s*:\s*reviewerToolFilter\s*\(\s*\)/, "toolFilter: { allow: ['read'] }")}`
-      .matchAll(/toolFilter\s*:\s*reviewerToolFilter\s*\(\s*\)/g)].length === 1);
+      .matchAll(/toolFilter\s*:\s*reviewerToolFilter\s*\(\s*\)/g)].length === 2);
 
   check('B5 过滤器来源本身导出了（测试能直接调它，而不是靠正则猜实现）',
     typeof indexMod.reviewerToolFilter === 'function', typeof indexMod.reviewerToolFilter);

@@ -94,8 +94,8 @@ check('(a) 反向变异：空树上一个方块都没有（「恰好 3 个」不
   squares(null).length === 0 && squares(tree).length === 3);
 check('(c) 没有第四个来路不明的入口',
   squares(tree).every((n) => ['self', 'dsh', 'codex'].includes(n.props['data-review-direction'])));
-check('(d) 结果区在状态 1 就常驻（点完就有地方落结论）',
-  collect(tree, (n) => n.props?.['data-review-feed'] !== undefined).length === 1);
+check('(d) 选择页只显示选择入口，不让旧结果和失败信息挡住入口',
+  collect(tree, (n) => n.props?.['data-review-feed'] !== undefined).length === 0);
 
 /** 退回状态 1（点目录页的「← 返回」）。 */
 const back = () => {

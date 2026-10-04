@@ -73,6 +73,7 @@ function makeReact() {
 /** 一条评价卡片（形状照 `normalizeVerdictRecord` 折出来的）。 */
 const card = (turn, verdict, headline) => ({
   kind: 'review',
+  targetKey: 'self:s1',
   lane: 'me',
   turn,
   verdict,
@@ -137,12 +138,16 @@ async function boot(options) {
   const calls = [];
   const execute = options.execute ?? ((sessionId, line, attachments) => {
     calls.push([sessionId, line, attachments]);
+    const response = String(line).includes(' resume ')
+      ? { selected: { kind: 'self', id: 's1', title: '本会话', lane: 'me' }, evidence: { title: '本会话', youSaid: ['合成测试'] } }
+      : { ok: true, pong: true, tick: {}, scan: {} };
     return Promise.resolve({
       ok: true,
-      value: { commandId: 'c1', result: { kind: 'success', text: JSON.stringify({ ok: true, pong: true, tick: {}, scan: {} }) } },
+      value: { commandId: 'c1', result: { kind: 'success', text: JSON.stringify(response) } },
     });
   });
   const storage = options.storage ?? makeStorage();
+  storage.setItem('review-target:s1', JSON.stringify({ kind: 'self', id: 's1', title: '本会话', lane: 'me' }));
   globalThis.window = {
     __ModuleLoader__: { load({ factory }) { registered = factory((spec) => (spec === 'react' ? react.React : {})); } },
     localStorage: storage,
@@ -169,6 +174,7 @@ async function boot(options) {
   const render = () => { react.reset(); tree = panel(props); };
   react.onChange(render);
   render();
+  await new Promise(resolve => setTimeout(resolve, 0));
   return {
     get tree() { return tree; },
     render,
@@ -216,7 +222,7 @@ async function boot(options) {
       && visibleResult?.props?.['data-review-detail'] === '2',
     `detail=${String(visibleResult?.props?.['data-review-detail'])}`);
   check('见过的条数被写进 localStorage（刷新后还算见过）',
-    storage.getItem('review-seen:s1') === '3', String(storage.getItem('review-seen:s1')));
+    storage.getItem('review-seen:s1:self:s1:me') === '3', String(storage.getItem('review-seen:s1:self:s1:me')));
 
   // 又来了新的一条 → 只报这 1 条，且 gist 换成新的那条。
   panel.setFeed([...feed, card(4, 'on-track', '第四条漂移_新的')]);
@@ -273,7 +279,7 @@ async function boot(options) {
   const storage = makeStorage();
   const first = await boot({ feed: [card(1, 'drifting', '第一次')], storage });
   const marked = clickUpdate(first.tree);
-  check('第一次：点掉信号（写下已读）', marked && storage.getItem('review-seen:s1') === '1');
+  check('第一次：点掉信号（写下已读）', marked && storage.getItem('review-seen:s1:self:s1:me') === '1');
   // 同一个 storage 再起一个实例（换一份 client.js 模块）＝ 刷新页面。
   const second = await boot({ feed: [card(1, 'drifting', '第一次')], storage });
   check('刷新后同一条不会又被当成新的（同一份 feed、换一份模块也零信号）',
