@@ -1,0 +1,15 @@
+node_modules/
+test/evidence/
+artifacts/
+*.log
+*.jsonl
+*.jsonl.zstd
+.env
+.env.*
+!.env.example
+.DS_Store
+*.tgz
+.dsh/
+.codex/
+probe-cache.json
+*credentials*

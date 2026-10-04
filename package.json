@@ -1,0 +1,75 @@
+{
+  "name": "@local/dsh-review-mode",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Work in progress: independent, evidence-aware conversation review for DeepSeek Harness and local Codex sessions.",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./reviewer": "./reviewer.js",
+    "./rubric": "./rubric.js"
+  },
+  "files": [
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "index.js",
+    "locale/*.json",
+    "reviewer.js",
+    "rubric.js",
+    "remote.js",
+    "README.md",
+    "README.zh-CN.md",
+    "docs/",
+    "examples/",
+    "scripts/prepare-runtime.mjs"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hqa-shu/dsh-review-mode.git"
+  },
+  "homepage": "https://github.com/hqa-shu/dsh-review-mode#readme",
+  "bugs": {
+    "url": "https://github.com/hqa-shu/dsh-review-mode/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "codex",
+    "ai-agents",
+    "conversation-review",
+    "agent-evaluation"
+  ],
+  "author": "Qian'an Huang",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node scripts/run-tests.mjs",
+    "check": "node scripts/check.mjs",
+    "prepare:runtime": "node scripts/prepare-runtime.mjs",
+    "test:integration": "node scripts/run-tests.mjs --integration"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2"
+  },
+  "devDependencies": {
+    "js-yaml": "4.1.0"
+  }
+}
