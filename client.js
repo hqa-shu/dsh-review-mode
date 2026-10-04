@@ -317,14 +317,14 @@ window.__ModuleLoader__.load({
       filter: '筛选原话…',
       noMatch: '没有匹配的原话。',
       qHead: '问 · 你当时说的话',
-      aHead: '答 · 审核结论（具体对话 / 概述 / 分析 / 建议）',
+      aHead: '审核洞察',
       // **四态四句话，绝不互相冒充**（用户现场：空状态里写着「审核中…」一直不动，
       // 而评价其实写在上面 —— 用户分不清「还没开始」「正在跑」「失败了」「有结果」）。
       empty: '还没有评价 —— 点下面任一个方向，它会自己开始、自己长出来。',
       pending: '复审进行中…复审员正在写，结果只落在这一区（不在上面的对话里）。',
       failed: '复审没有完成 —— ',
       streaming: '生成中…',
-      askPlaceholder: '旁边问一句（落在下面的流里）…',
+      askPlaceholder: '例如：第一条依据是什么？',
       ask: '问',
       asked: '你问的',
       hint: '拖动左边缘可以调宽度',
@@ -332,7 +332,7 @@ window.__ModuleLoader__.load({
 
     /** 三个方向。 */
     const DIRECTIONS = [
-      { label: '审你自己', note: '你和 DSH 的这个会话', kind: 'self' },
+      { label: '审核当前会话', note: '直接分析正在看的对话', kind: 'self' },
       { label: '审其它 DSH 会话', note: 'DSH 里别的历史会话', kind: 'dsh' },
       { label: '审 Codex 对话', note: '你在 ChatGPT 桌面版 / Codex 里的对话', kind: 'codex' },
     ];
@@ -461,12 +461,13 @@ window.__ModuleLoader__.load({
       return h('div', { key: 'insights', 'data-review-insights': String(items.length) }, items.map((item, index) => {
         const parts = String(item).split('｜');
         const title = parts.length > 1 ? parts[0] : parts[0].split('。')[0];
-        const details = parts.slice(1);
-        const suggestion = String(record?.advice?.[index] ?? '');
+        const details = parts.slice(1).filter(p=>!/^建议[:：]/.test(p.trim()));
+        const inlineSuggestion=parts.find(p=>/^建议[:：]/.test(p.trim()));
+        const suggestion = inlineSuggestion ? inlineSuggestion.trim().replace(/^建议[:：]/,'') : String(record?.advice?.[index] ?? '');
         return h('details', {
           key: `insight-${record?.at ?? 'stream'}-${index}`,
           'data-review-insight': String(index + 1),
-          style: { marginTop: 6, padding: '8px 10px', borderRadius: 8, background: ROW_ZEBRA[index % ROW_ZEBRA.length], fontSize: 12.5, lineHeight: '19px' },
+          style: { marginTop: 6, padding: '8px 10px', borderRadius: 8, background: ROW_ZEBRA[index % ROW_ZEBRA.length].background, fontSize: 12.5, lineHeight: '19px' },
         }, [
           h('summary', { key: 'title', style: { cursor: 'pointer', overflowWrap: 'anywhere' } }, [
             h('span',{key:'label',style:{fontWeight:600}},`${index + 1}. ${title}`),
@@ -746,6 +747,26 @@ window.__ModuleLoader__.load({
       const [tree, setTree] = React.useState(null);
       const [note, setNote] = React.useState('');
       const [picked, setPicked] = React.useState(null);
+      const targetKey = `review-target:${sessionId}`;
+      const rememberTarget = item => { try { window.localStorage?.setItem(targetKey, JSON.stringify({kind:item.kind,id:item.id,title:item.title,lane:item.lane,paused:item.paused})); } catch {} };
+      React.useEffect(() => {
+        let saved; try { saved = JSON.parse(window.localStorage?.getItem(targetKey) ?? 'null'); } catch {}
+        let active=true;
+        queueMicrotask(()=>{
+        if (!active) return;
+        setPicked(null);setDepth(0);setKind(null);setSelected(null);setAsked([]);
+        if (preset !== 'review' || !saved?.id || !['self','dsh','codex'].includes(saved.kind)) return;
+        const command = cmdLine('resume', saved.kind, saved.id, saved.lane ?? 'me',saved.paused ? 'on' : 'off');
+        callCommand(sessionId, command).then(outcome=>{
+          if (!active) return;
+          const res=commandResult(outcome,command);
+          if (!res.ok) { setNote(res.why); return; }
+          const result=parseJson(res.text);if(!result?.evidence)return;
+          setPicked({item:{...saved,...result.selected},conversation:result.evidence});setKind(saved.kind);setDepth(2);
+        });
+        });
+        return ()=>{active=false;};
+      }, [sessionId,preset]);
       /** master–detail 左边被点中的那一行的下标；`null` = 跟着最新一条走。 */
       const [selected, setSelected] = React.useState(null);
       const [width, setWidth] = React.useState(() => {
@@ -755,6 +776,12 @@ window.__ModuleLoader__.load({
         } catch { /* 退回默认 */ }
         return DEFAULT_W;
       });
+      const [viewport, setViewport] = React.useState(() => window.innerWidth || 1280);
+      React.useEffect(() => {
+        const resize = () => setViewport(window.innerWidth || 1280);
+        window.addEventListener('resize', resize);
+        return () => window.removeEventListener('resize', resize);
+      }, []);
       const dragging = React.useRef(null);
       /** 面板根节点 —— 用来沿 DOM 往上找 shell 的 frame，把「预留一列」写上去。 */
       const reserveRef = React.useRef(null);
@@ -802,8 +829,11 @@ window.__ModuleLoader__.load({
       const submitAsk = () => {
         const text = String(askDraft ?? '').trim();
         if (text.length === 0) return;
+        if (!selectedCard) { setNote('还没有可提问的评价，请先完成一次审核。'); return; }
         setAskDraft('');
-        const command = cmdLine('ask', text);
+        const reviewId = String(selectedCard.reviewId ?? `${selectedCard.at}:${selectedCard.turn}`);
+        const qaId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const command = cmdLine('ask-card', encodeURIComponent(reviewId), qaId, text);
         callCommand(sessionId, command).then((outcome) => {
           const res = commandResult(outcome, command);
           if (!res.ok) { setNote(res.why); return; }
@@ -811,7 +841,7 @@ window.__ModuleLoader__.load({
           // 空回答不画空条目（那是假条目）—— 但也不该静默，如实说一句。
           if (answer.length === 0) { setNote('宿主没有给出回答（问答条目也不会出现在流里）。'); return; }
           setNote('');
-          setAsked((prev) => [...prev, { question: text, answer }].slice(-ASK_ECHO_KEEP));
+          setAsked((prev) => [...prev, { question: text, answer, reviewId, qaId }].slice(-ASK_ECHO_KEEP));
         });
       };
 
@@ -847,14 +877,15 @@ window.__ModuleLoader__.load({
        * 把 overlay 挂在 frame 里），把上面那条 `RESERVE_CSS` 用到的变量写在它身上。
        * 找不到 frame（老宿主 / 测试替身）就什么都不做 —— 面板仍然工作，只是没有预留。
        */
-      React.useEffect(() => {
+      (React.useLayoutEffect ?? React.useEffect)(() => {
         const node = reserveRef.current;
+        if (preset !== 'review') return undefined;
         if (node === null || node === undefined || typeof node.closest !== 'function') return undefined;
         const frame = node.closest('[data-shell-overlay]')?.parentElement
           ?? (typeof document !== 'undefined' ? document.querySelector('[data-shell-overlay]')?.parentElement : null)
           ?? null;
         if (frame === null || frame === undefined || frame.style === undefined) return undefined;
-        const reserved = open ? Math.min(width, Math.round((window.innerWidth || 1280) * MAX_RESERVE_RATIO)) : 0;
+        const reserved = open ? Math.min(width, Math.round(viewport * MAX_RESERVE_RATIO)) : 0;
         const apply = () => {
           frame.setAttribute('data-review-reserved', '1');
           frame.setAttribute('data-review-reserved-w', String(reserved));
@@ -868,7 +899,7 @@ window.__ModuleLoader__.load({
           frame.removeAttribute('data-review-reserved');
           frame.removeAttribute('data-review-reserved-w');
         };
-      }, [open, width, sessionId]);
+      }, [open, width, sessionId, preset, viewport]);
 
       /* ── 活性：**真的探一次**，不是装饰 ────────────────────────────────
        *
@@ -967,7 +998,8 @@ window.__ModuleLoader__.load({
           setTree(result);
           setNote('');
           if (result.self === true) {
-            setPicked({ item: { kind: 'self', id: result.selected?.id, title: '本会话' }, conversation: result.evidence });
+            const item={...result.selected,kind:'self',id:result.selected?.id,title:'本会话'};
+            setPicked({ item, conversation: result.evidence });rememberTarget(item);
             setDepth(2);
           }
         });
@@ -990,11 +1022,19 @@ window.__ModuleLoader__.load({
             return;
           }
           const result = parseJson(res.text);
-          setPicked({ item, conversation: result?.evidence ?? null });
+          const chosen={...item,...result?.selected};rememberTarget(chosen);
+          setPicked({ item:chosen, conversation: result?.evidence ?? null });
           setNote('');
         });
       };
 
+      React.useEffect(()=>{
+        if(preset!=='review' || !picked?.item?.id)return;
+        let active=true;
+        const cmd=cmdLine('evidence');
+        callCommand(sessionId,cmd).then(outcome=>{if(!active)return;const res=commandResult(outcome,cmd),data=parseJson(res.text);if(res.ok&&data?.evidence)setPicked(p=>p ? {...p,conversation:data.evidence} : p);});
+        return ()=>{active=false;};
+      },[sessionId,preset,picked?.item?.id,projection?.reviews]);
       if (preset !== 'review') return null;
 
       /* ── 活性结论：**由本地时钟算出来**，不需要投影变化，也不需要新数据 ────
@@ -1018,9 +1058,11 @@ window.__ModuleLoader__.load({
       const failed = probe.status === 'ok' && probe.facts?.lastTurn?.failed === true;
       const liveStatus = probe.status === 'down' || stale ? 'down' : (failed ? 'fail' : probe.status);
       const liveTone = { ...(LIVENESS[liveStatus] ?? LIVENESS.first) };
-      if (liveStatus === 'ok') liveTone.label = probe.facts?.selection
-        ? (probe.facts?.tick?.enabled === false ? '已连接 · 监控关闭' : '已连接 · 已选目标')
+      const activeSelection = picked?.item ?? probe.facts?.selection;
+      if (liveStatus === 'ok') liveTone.label = activeSelection
+        ? (projection?.pending || projection?.stream ? '已连接 · 正在审核' : (activeSelection.paused ? '已连接 · 监控已暂停' : (probe.facts?.tick?.enabled !== false ? '已连接 · 监控已开启' : '已连接 · 监控已关')))
         : '已连接 · 等待选择';
+      liveTone.spin = Boolean(projection?.pending || projection?.stream);
       /** 毫秒 → 一句人话（不足一秒就说毫秒，测试里的短保鲜期才读得懂）。 */
       const spanText = (ms) => (ms < 1000 ? `${Math.round(ms)} 毫秒` : `${Math.round(ms / 1000)} 秒`);
       const liveWhy = probe.status === 'down'
@@ -1060,8 +1102,10 @@ window.__ModuleLoader__.load({
       const cards = Array.isArray(projection?.feed) ? projection.feed : [];
       // 问答条目（`kind:'qa'`）和自动评价在**同一个流**里，但「最新一张评价」只能在评价里取，
       // 否则刚问完一句，右栏那条评价的完整分析就被一条问答顶掉了。
-      const reviews = cards.filter((card) => card?.kind !== 'qa');
+      const activeTargetKey=picked?.item ? `${picked.item.kind}:${picked.item.id}` : null;
+      const reviews = cards.filter(card=>card?.kind!=='qa' && (!activeTargetKey || (card.targetKey ? card.targetKey===activeTargetKey : picked.item.kind==='self')));
       const latest = reviews.length > 0 ? reviews[reviews.length - 1] : null;
+
       /* ── 问答条目：投影里的 + **命令回执的本地回显**（bug 54）────────────────
        *
        * 投影里那份是正式记录（宿主 `appendReviewSurface(agent,'qa',…)` 投的
@@ -1071,18 +1115,18 @@ window.__ModuleLoader__.load({
        * 所以屏幕上任何时刻都只有一份（不会先左边冒一条、再右边冒一条）。
        */
       const projectedQa = cards.filter((card) => card?.kind === 'qa')
-        .map((card) => ({ question: String(card?.question ?? ''), answer: String(card?.text ?? '') }));
+        .map((card) => ({ question: String(card?.question ?? ''), answer: String(card?.text ?? ''), reviewId: card.reviewId, qaId: card.qaId }));
       const qaEntries = [
         ...projectedQa,
-        ...asked.filter((echo) => !projectedQa.some((entry) => entry.question.trim() === echo.question.trim())),
+        ...asked.filter((echo) => !projectedQa.some((entry) => entry.qaId && entry.qaId === echo.qaId)),
       ].slice(-6);
       /* master–detail 的**选中项**（用户 2026-10 的要求：左边一条一行，右边显示选中那条的分析）。
        * 默认 = 最新一条；`selected` 只在点过某一行之后才有值。
        * 投影的 `feed` 是**有界环形缓冲**（最多 60 条，超界丢最旧），所以下标可能失效
        * —— 越界/失效就收回最新一条，绝不指向不存在的卡片。 */
-      const selectedIndex = (selected === null || !Number.isInteger(selected) || selected >= reviews.length)
-        ? (reviews.length > 0 ? reviews.length - 1 : -1)
-        : Math.max(0, selected);
+      const cardKey = card => String(card?.reviewId ?? `${card?.at}:${card?.turn}`);
+      const selectedMatch = selected === null ? -1 : reviews.findIndex(card=>cardKey(card)===selected);
+      const selectedIndex = selectedMatch < 0 ? reviews.length - 1 : selectedMatch;
       const selectedCard = selectedIndex >= 0 ? reviews[selectedIndex] : null;
 
       /* ── 「有新结果」信号 ─────────────────────────────────────────────
@@ -1100,7 +1144,8 @@ window.__ModuleLoader__.load({
         setSeen({ key: seenKey, count });
         try { window.localStorage?.setItem(seenKey, String(count)); } catch { /* 存不了就只在这次会话里记住 */ }
       };
-      const unseen = Math.max(0, reviews.length - Math.min(seenCount, reviews.length));
+      const totalReviews = Math.max(Number(projection?.reviews) || 0, reviews.length);
+      const unseen = Math.max(0, totalReviews - Math.min(seenCount, totalReviews));
       const gistOf = (item) => {
         if (item === null || item === undefined) return '';
         const label = (VERDICT[item.verdict] ?? VERDICT.unknown).label;
@@ -1216,7 +1261,7 @@ window.__ModuleLoader__.load({
             : (failure !== null && failure !== undefined ? 'failed' : (latest === null ? 'empty' : 'ready')));
         // 半成品只属于**最新**那条：选了更早的一条时，右栏画那条已经定稿的分析。
         const streamForSelected = selectedIndex === reviews.length - 1 ? stream : null;
-        const rows = reviews.map((card, index) => evaluationRow(card, index, index === selectedIndex, setSelected));
+        const rows = reviews.map((card, index) => evaluationRow(card, index, index === selectedIndex, i=>setSelected(i===null ? null : cardKey(reviews[i]))));
         const rowsColumn = h('details', {
           key: 'rows', 'data-review-col': 'q',
           style: { flex: '0 0 40%', minWidth: 0, overflowY: 'auto', overscrollBehavior: 'contain' },
@@ -1239,7 +1284,7 @@ window.__ModuleLoader__.load({
               ? h('button', {
                   key: 'latest', type: 'button', 'data-review-latest': '1',
                   title: '回到最新一条',
-                  onClick: () => setSelected(null),
+                  onClick: () => {setSelected(null);acknowledge(totalReviews);},
                   style: {
                     flex: 'none', whiteSpace: 'nowrap', marginLeft: 'auto',
                     padding: '1px 7px', borderRadius: 6, cursor: 'pointer',
@@ -1251,10 +1296,10 @@ window.__ModuleLoader__.load({
                 }, '看最新')
               : null,
           ].filter(Boolean)),
-          line('insight-head', '洞察 · 点击一条展开依据和做法', '--dsw-alias-label-tertiary', 11.5),
-          streamForSelected || pending || !selectedCard
-            ? answerBlock(null, streamForSelected, pending, failure, tone)
-            : insightsBlock(selectedCard),
+          line('insight-head', `洞察${selectedCard?.lane ? ' · '+({me:'审我',conversation:'审对话',agent:'审AI'}[selectedCard.lane] ?? '') : ''} · 点击一条展开依据和做法`, '--dsw-alias-label-tertiary', 11.5),
+          pending ? line('working','新审核正在生成；仍可查看这条评价','--dsw-alias-label-secondary') : null,
+          failure ? line('failed',String(failure.message ?? '审核未完成'),'--dsw-alias-state-error-primary') : null,
+          selectedCard ? insightsBlock(selectedCard) : answerBlock(null, streamForSelected, pending, failure, tone),
           // 问答条目**不在这边**：它长在左栏那个提问框下面（bug 54），
           // 否则回答会掉在右栏一长段分析的最底下、滚不到就以为「什么都没显示」。
         ]);
@@ -1271,6 +1316,12 @@ window.__ModuleLoader__.load({
           },
         }, [
           noteLine,
+          withEvidence && picked ? h('div',{key:'target',style:{fontSize:11.5,lineHeight:'20px',marginBottom:6}},[
+            h('div',{key:'title'},`对象：${picked.item?.title ?? '本会话'}`),
+            ...[['me','审我'],['conversation','审对话'],['agent','审AI']].map(([lane,label])=>h('button',{key:lane,type:'button','aria-pressed':(picked.item?.lane ?? 'me')===lane,onClick:()=>{const cmd=cmdLine('focus',lane);callCommand(sessionId,cmd).then(outcome=>{const res=commandResult(outcome,cmd),data=parseJson(res.text);if(res.ok&&data?.selected){setPicked({item:data.selected,conversation:data.evidence});rememberTarget(data.selected);}else setNote(res.why);});},style:{fontSize:11.5,marginRight:4,padding:'2px 7px',cursor:'pointer',borderRadius:6,border:'1px solid var(--dsw-alias-border-l1)',background:(picked.item?.lane ?? 'me')===lane ? 'var(--dsw-alias-bg-layer-3)' : 'transparent',color:'var(--dsw-alias-label-primary)'}},label)),
+            h('button',{key:'pause',type:'button',onClick:()=>{const cmd=cmdLine('pause',picked.item?.paused ? 'off':'on');callCommand(sessionId,cmd).then(outcome=>{const res=commandResult(outcome,cmd),data=parseJson(res.text);if(res.ok&&data?.selected){setPicked(p=>({...p,item:data.selected}));rememberTarget(data.selected);}else setNote(res.why);});},style:{fontSize:11.5,padding:'2px 7px',cursor:'pointer'}},picked.item?.paused ? '恢复监控' : '暂停监控'),
+            h('div',{key:'status',style:{color:'var(--dsw-alias-label-secondary)'}},picked.item?.paused ? '自动监控已暂停；仍可手动重新审核' : '有新用户消息时自动审核；切换侧重点后可点重新审核'),
+          ]) : null,
           h('div', {
             key: 'md', 'data-review-master': '1',
             style: { display: 'flex', flexDirection: 'column', gap: 10 },
@@ -1324,7 +1375,7 @@ window.__ModuleLoader__.load({
           // **回答就长在这个框下面**（左栏、你打字的同一块地方）：
           // 投影里的问答条目 + 命令回执的本地回显，去重后一起画。
           // 用户提问之后眼睛就在这里 —— 答在另一栏的底部、还要滚过去找，等于没答（bug 54）。
-          qaBlock(qaEntries, 'askqa'),
+          qaBlock(qaEntries.filter(entry => !entry.reviewId || entry.reviewId === String(selectedCard?.reviewId ?? `${selectedCard?.at}:${selectedCard?.turn}`)), 'askqa'),
         ]);
         return h('div', { key: 'evidence', style: { marginTop: 8, borderTop: '1px solid var(--dsw-alias-border-l1)', paddingTop: 6 } }, [
           line('qh', TEXT.qHead, '--dsw-alias-label-tertiary', 11.5),
@@ -1385,7 +1436,7 @@ window.__ModuleLoader__.load({
           setSelected(null);
           return;
         }
-        const up = depth === 2 && kind === 'self' ? 0 : depth - 1;
+        const up = depth === 2 && (kind === 'self' || kind === null) ? 0 : depth - 1;
         setDepth(up);
         setSelected(null);
         setNote('');
@@ -1429,12 +1480,18 @@ window.__ModuleLoader__.load({
             }, TEXT.back)
           : null,
         h('span', { key: 'sp', style: { flex: '1 1 auto', minWidth: 0 } }),
+        picked && !projection?.pending && !projection?.stream ? h('button',{key:'refresh',type:'button',onClick:()=>{const cmd=cmdLine('refresh');callCommand(sessionId,cmd).then(outcome=>{const res=commandResult(outcome,cmd);if(!res.ok)setNote(res.why);else{const data=parseJson(res.text);if(data?.evidence)setPicked(p=>({...p,conversation:data.evidence}));setNote('');}});},style:{fontSize:11.5,padding:'3px 7px',cursor:'pointer',borderRadius:6,border:'1px solid var(--dsw-alias-border-l1)',background:'var(--dsw-alias-bg-layer-2)',color:'var(--dsw-alias-label-primary)'}},'重新审核'):null,
+        projection?.pending || projection?.stream ? h('button',{
+          key:'stop',type:'button','data-review-stop':'1',
+          onClick:()=>{const cmd=cmdLine('stop');callCommand(sessionId,cmd).then(outcome=>{const result=commandResult(outcome,cmd);setNote(result.ok ? result.text : result.why);});},
+          style:{padding:'3px 8px',cursor:'pointer',borderRadius:6,border:'1px solid var(--dsw-alias-border-l1)',background:'var(--dsw-alias-bg-layer-2)',color:'var(--dsw-alias-label-primary)',fontFamily:'inherit'},
+        },'停止审核'):null,
         h('button', {
           key: 'toggle', type: 'button', 'aria-expanded': open,
           onClick: () => {
             const next = !open;
             // 展开 = 结果区（最新那条就在最上面）立刻在眼前 —— 记为「看过了」。
-            if (next) acknowledge(reviews.length);
+            if (next) acknowledge(totalReviews);
             setOpen(next);
           },
           style: { flex: 'none', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--dsw-alias-label-secondary)', fontSize: 12.5, padding: '0 2px', textDecoration: 'underline', fontFamily: 'inherit' },
@@ -1456,9 +1513,9 @@ window.__ModuleLoader__.load({
         'data-review-update-gist': gistOf(latest).slice(0, 160),
         title: '有你还没看过的评价 —— 点一下看最新那条（看过就消失）',
         onClick: () => {
-          acknowledge(reviews.length);
+          acknowledge(totalReviews);
           setOpen(true);
-          setDepth(0);
+          setDepth(2);
           setSelected(null);
           try {
             const node = bodyRef.current;
@@ -1595,7 +1652,7 @@ window.__ModuleLoader__.load({
       // 「预留一列」的规则也随面板进 DOM；变量由上面的 effect 写在 shell 的 frame 上。
       const reserveCss = h('style', { key: 'reservecss', 'data-review-reserve-css': '1' }, RESERVE_CSS);
       // 这次实际预留了多少 px（0 = 收起 / 找不到 frame）。测试与排查都读它。
-      const reservedWidth = open ? Math.min(width, Math.round((window.innerWidth || 1280) * MAX_RESERVE_RATIO)) : 0;
+      const reservedWidth = open ? Math.min(width, Math.round(viewport * MAX_RESERVE_RATIO)) : 0;
 
       /* ── **版本戳**（2026-10-03 现场失败的止血）────────────────────────
        *
@@ -1666,7 +1723,7 @@ window.__ModuleLoader__.load({
        * 收起时不再整块消失，而是缩成右上角一个小条（标题 + 活性 + 版本戳还在），
        * 所以「有没有连上、跑的是哪一版」永远不会因为收起而看不见。 */
       const rootStyle = open ? {
-        position: 'fixed', top: 0, right: 0, bottom: 0, width,
+        position: 'fixed', top: 0, right: 0, bottom: 0, width: reservedWidth,
         display: 'flex', flexDirection: 'column', minHeight: 0,
         // `shell.overlay` 那一层是 click-through 的，占位者要自己把指针事件要回来。
         pointerEvents: 'auto',
@@ -1692,7 +1749,12 @@ window.__ModuleLoader__.load({
         'data-review-view': VIEW_NAMES[depth] ?? 'pick',
         ref: reserveRef,
         style: rootStyle,
-      }, [reserveCss, spinCss, grip, head, updateBar, body, hintLine, liveness, historyNode, stamp, diag].filter(Boolean));
+      }, [reserveCss, spinCss, grip, head, updateBar, body, hintLine, liveness,
+        h('details',{key:'diagnostics',style:{padding:'2px 10px 6px',fontSize:10.5}},[
+          h('summary',{key:'s',style:{cursor:'pointer'}},hostDiskNewer || pageDiskNewer ? '版本需要刷新 · 查看诊断' : '连接诊断'),
+          historyNode, stamp, diag,
+        ].filter(Boolean)),
+      ].filter(Boolean));
     }
 
     return {

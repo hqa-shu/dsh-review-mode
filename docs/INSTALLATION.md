@@ -1,5 +1,7 @@
 # Installation · 安装
 
+Version 2.1.0 was tested in an existing local Harness profile. A clean installation on another machine remains unverified; the behavior and controls are described in [CURRENT-IMPLEMENTATION.md](../CURRENT-IMPLEMENTATION.md).
+
 Status: **development snapshot**. Baseline: DeepSeek Harness Desktop `0.2.0-rc.2`, macOS arm64. Node.js 24+ is required for the scripts. This guide was prepared from the installed host package and local profile structure; fresh installation on another computer remains unverified.
 
 ## 1. Clone and prepare dependencies
@@ -20,7 +22,7 @@ node scripts/prepare-runtime.mjs --asar /absolute/path/to/app.asar
 
 Only selected packages and their dependency closure are extracted. Existing package directories are retained; rerun in a fresh checkout after a host upgrade. No application files, profile files, credentials, or sessions are edited. The script performs no network requests and runs no dependency lifecycle scripts.
 
-The package manifest also declares its required Typert SDK dependency. Registry-only dependency installation has not been validated for this snapshot; the local SDK preparation path is the baseline.
+Version 2.1.0 uses the host-injected SDK at runtime and has no third-party runtime dependency. The local SDK preparation step is useful for host-backed tests; portable tests need only Node.js 24+.
 
 ## 2. Install as a local bundle
 

@@ -1,5 +1,7 @@
 # Configuration
 
+This page began with the 2.0.0 source snapshot. For the 2.1.0 behavior and verified controls, see [CURRENT-IMPLEMENTATION.md](../CURRENT-IMPLEMENTATION.md); confirm any key against the installed `resolveConfig()` before changing a profile.
+
 Merge the following entry into the profile's `cordis.patch.yml`; keep existing profile entries. The example file is [examples/cordis.patch.yml](../examples/cordis.patch.yml). Runtime defaults below come from `resolveConfig()` in `index.js`.
 
 | Key | Default | Meaning / accepted range |

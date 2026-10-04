@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import {apply,applyEvent} from '../index.js';
+import {answerFromTable} from '../remote.js';
+const commands=new Map();let state,projection;
+const agent={id:'qa',session:{header:{id:'qa'},seq:2,snapshotEvents:()=>[],append(type,data){state=projection.apply(state,{type,data});}},inject(){throw Error('No injection');}};
+const old=globalThis.setInterval;globalThis.setInterval=()=>0;
+apply({logger:{warn(){},info(){}},reflect:{provide(){},get(){}},effect:f=>f(),on(){},inject(n,fn){fn({effect:f=>f(),commands:{register:d=>commands.set(d.name,d)}});},sessionProjections:{register(d){projection=d;state=d.init();},stateOf:(s,k)=>k==='agentPreset' ? 'review':state},agents:{list:()=>[agent],get:()=>agent,withoutInitiator:f=>f()},subagents:{}},{watchCodex:false});globalThis.setInterval=old;
+const oldCard={sections:[{key:'analysis',title:'分析'},{key:'advice',title:'建议'}],at:1,turn:1,targetKey:'self:qa',verdict:'on-track',headline:'旧评价',analysis:['旧标题｜依据：旧证据一｜洞察：旧解释｜建议：旧做法','第二条｜依据：旧证据二｜洞察：另一个解释｜建议：另一步'],advice:['旧做法','另一步']};
+const newCard={...oldCard,at:2,turn:2,headline:'新评价',analysis:['新标题｜依据：新证据｜洞察：新解释｜建议：新做法']};
+for(const review of [oldCard,newCard])state=applyEvent(state,{type:'command/done',data:{reviewUpdate:{kind:'review-mode',form:'notice',review}}});
+assert.equal(state.feed[0].targetKey,'self:qa');console.log('PASS 评价重放保留审核对象标识');
+const run=rawInput=>commands.get('review-mode').handler({agent,rawInput});
+const answer=run('ask-card 1%3A1 q1 第一条依据是什么？');assert.equal(answer.kind,'success');assert(answer.text.includes('旧证据一'));assert(!answer.text.includes('新证据'));assert(!answer.text.includes('旧证据二'));console.log('PASS 对旧评价序号提问只摘录所选条目的旧依据');
+run('ask-card 1%3A1 q2 第一条依据是什么？');const qa=state.feed.filter(c=>c.kind==='qa');assert.equal(qa.length,2);assert.notEqual(qa[0].qaId,qa[1].qaId);assert(qa.every(c=>c.reviewId==='1:1'));console.log('PASS 同一问题可重复提问，并按评价与问答ID独立保存');
+const before=state.feed.length;assert.equal(run('ask-card missing q3 依据').kind,'error');assert.equal(state.feed.length,before);console.log('PASS 已移除历史评价不退回最新评价作答');
+assert(answerFromTable('第二条依据是什么？',oldCard).includes('旧证据二'));assert(!answerFromTable('第二条依据是什么？',oldCard).includes('旧证据一'));console.log('PASS 第二条序号定位也正确');
+assert.equal(state.reviews,2);assert.equal(state.feed.filter(c=>c.kind==='review').length,2);console.log('PASS 面板问答不增加自动评价数也不替换已有评价');

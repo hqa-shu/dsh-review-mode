@@ -11,5 +11,5 @@ jobs:
         with:
           node-version: '24'
       - run: node scripts/check.mjs
-      - run: node scripts/run-tests.mjs --portable
+      - run: node test/run.mjs
 # Host-backed tests need an installed matching Harness SDK and are run locally.

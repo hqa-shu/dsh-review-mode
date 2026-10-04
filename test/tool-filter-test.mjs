@@ -379,30 +379,7 @@ const indexMod = await import(indexPath.pathname);
       !/调用\s*`?read`?|用\s*`?read`?|read\s*工具/.test(prompt), prompt.split('\n')[2] ?? '');
   }
 
-  // ── C-2：轮收尾那条 `runReview` ─────────────────────────────────────
-  {
-    starts.length = 0;
-    composeErrors.length = 0;
-    childVisible.length = 0;
-    // 把回合 token 推到 9：C-1 的 directed 复审已经把这一条会话的 token 5 记进了去重表，
-    // 这里换一个 token 才是「另一个回合」的通用复审（否则被有意去重掉）。
-    projectionState = null;
-    reviewState.turnStartSeq = 9;
-    const handler = handlers.get('agent/turn-stopping');
-    check('C0 轮收尾 handler 注册上了', typeof handler === 'function');
-    if (typeof handler === 'function') {
-      await handler({ agent, turn: 1, signal: new AbortController().signal });
-      await settle();
-      check('C2 轮收尾真的派了 1 次复审', starts.length === 1,
-        `starts=${starts.length} composeErrors=${JSON.stringify(composeErrors)}`);
-      check('C2 子作用域套过滤器时**没有抛错**', composeErrors.length === 0, JSON.stringify(composeErrors));
-      check('C2 复审子 Agent 的可见工具 = 0', childVisible.length === 1 && childVisible[0].length === 0,
-        JSON.stringify(childVisible));
-      check('C2 捕获到的 `toolFilter` 也是那一个空 allow 形状',
-        JSON.stringify(starts[0]?.toolFilter) === JSON.stringify({ allow: [] }),
-        JSON.stringify(starts[0]?.toolFilter));
-    }
-  }
+  check('C2 不注册无目标的通用轮收尾派单（由已选目标消息边沿驱动）', !handlers.has('agent/turn-stopping'));
 
   // ── C-3：反向变异 —— 同一套端到端判据对历史那个错名字必须变红 ────────
   {

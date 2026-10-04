@@ -29,7 +29,7 @@ function decompressLog(file) {
   return Buffer.concat(parts).toString('utf8');
 }
 
-const WORKSPACE_SLUG = '--tmp-review-fixture-workspace--';
+const WORKSPACE_SLUG = '--Users-example-Documents-deepseek-harness-default-workspace--';
 
 /**
  * 读取一个真实会话的事件、轮次边界与用户指令。
@@ -75,7 +75,7 @@ export function makeHost(mod, opts) {
     id: 'sess-real',
     injected: null,
     session: {
-      header: { id: 'sess-real', cwd: '/tmp/review-fixture/Documents/deepseek-harness/default-workspace' },
+      header: { id: 'sess-real', cwd: '/Users/example/Documents/deepseek-harness/default-workspace' },
       seq: upto,
       snapshotEvents: (from, to) => events.filter((e) => e.seq >= from && e.seq < to),
     },

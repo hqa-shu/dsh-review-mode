@@ -48,7 +48,7 @@ const DIRECTORY = {
   ],
   selected: null,
 };
-const EVIDENCE = { title: '5005复习 / 细节问答', cwd: '/tmp/review-fixture/Desktop/5005', youSaid: ['你查查课件，课件当中有讲这几个算法吗？'], background: [], stats: '你说 1 条' };
+const EVIDENCE = { title: '5005复习 / 细节问答', cwd: '/Users/example/Desktop/5005', youSaid: ['你查查课件，课件当中有讲这几个算法吗？'], background: [], stats: '你说 1 条' };
 const commandReply = (text) => ({ ok: true, value: { commandId: 'c1', result: { kind: 'success', text } } });
 const fakeRemote = {
   commands: {
@@ -222,7 +222,7 @@ const SECTIONS = [
 ];
 props = propsFor('review', {
   feed: [{
-    verdict: 'drifting', sections: SECTIONS,
+    targetKey:'codex:a1',verdict: 'drifting', sections: SECTIONS,
     headline: '从「课件讲没讲」滑到「文件在哪」',
     dialog: ['你：「课件当中有讲这几个算法吗？」'],
     summary: '你在核对课件覆盖，对面在找文件。',
@@ -234,10 +234,9 @@ props = propsFor('review', {
 rerender();
 check('状态 3 左栏是「问 · 你当时说的话」', hasText(tree, '你当时说的话'));
 check('状态 3 左栏有你那句原话', hasText(tree, '你查查课件'));
-check('状态 3 右栏是「答 · 审核结论」', hasText(tree, '审核结论'));
-check('状态 3 右栏带四个分析锚点（具体对话 / 对话概述 / 分析 / 建议）',
-  hasText(tree, '具体对话') && hasText(tree, '对话概述') && hasText(tree, '分析') && hasText(tree, '建议'));
-check('状态 3 右栏画的是**实际内容**，不是空壳', hasText(tree, '找文件') && hasText(tree, '先确认覆盖'));
+check('状态 3 显示短洞察标题', hasText(tree, '审核洞察'));
+check('状态 3 每条洞察可原地展开', collect(tree,n=>n.type==='details'&&n.props?.['data-review-insight']).length===1);
+check('状态 3 右栏画的是**实际内容**，不是空壳', hasText(tree, '话题漂移') && hasText(tree, '先确认覆盖'));
 check('状态 3 右栏带结论标签「有漂移」', hasText(tree, '有漂移'));
 check('**没有**任何固定表格节点的残留（旧 3×3 已删）',
   collect(tree, (n) => n.props?.['data-review-table'] !== undefined).length === 0
@@ -250,9 +249,9 @@ check('**没有**任何固定表格节点的残留（旧 3×3 已删）',
 // `test/panel-rows-test.mjs` 里，避免同一个行为两条测试各守一半。
 props = propsFor('review', {
   feed: [
-    { verdict: 'on-track', sections: SECTIONS, headline: '最早那轮没有漂移', analysis: ['没问题'], advice: ['继续'] },
-    { verdict: 'off-track', sections: SECTIONS, headline: '第二轮跑偏了', analysis: ['卡了两轮'], advice: ['回退'] },
-    { verdict: 'drifting', sections: SECTIONS, headline: '最新这条要展开', analysis: ['在细节上'], advice: ['收窄'] },
+    { targetKey:'codex:a1',verdict: 'on-track', sections: SECTIONS, headline: '最早那轮没有漂移', analysis: ['没问题'], advice: ['继续'] },
+    { targetKey:'codex:a1',verdict: 'off-track', sections: SECTIONS, headline: '第二轮跑偏了', analysis: ['卡了两轮'], advice: ['回退'] },
+    { targetKey:'codex:a1',verdict: 'drifting', sections: SECTIONS, headline: '最新这条要展开', analysis: ['在细节上'], advice: ['收窄'] },
   ],
 });
 rerender();
@@ -264,7 +263,7 @@ check('每一行只有前导部分（带自己的领先行，不带自己的分�
   && !JSON.stringify(reviewRows()[1]).includes('卡了两轮'),
   JSON.stringify(reviewRows()[1] ?? null).slice(0, 100));
 check('最新一条默认在右栏展开（领先行 + 四段）',
-  hasText(tree, '最新这条要展开') && hasText(tree, '具体对话') && hasText(tree, '收窄'));
+  hasText(tree, '最新这条要展开') && hasText(tree, '在细节上') && hasText(tree, '收窄'));
 
 // ── 诊断行：浏览器究竟看到了什么 ───────────────────────────
 // 四个探针都走 `ctx.get`（没有它才退回属性访问），**四个都不进 inject**。

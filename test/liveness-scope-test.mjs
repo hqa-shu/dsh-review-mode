@@ -250,8 +250,8 @@ const TICK = { enabled: true, intervalMs: 5000, lastAt: Date.now() - 1000, ageMs
     collect(panel.tree, (n) => n.props?.['data-review-liveness-history'] !== undefined).length === 1
     && !/跑不起来/.test(textOf(panel.tree)),
     String(collect(panel.tree, (n) => n.props?.['data-review-liveness-history'] !== undefined)[0]?.props?.['data-review-liveness-history']));
-  check('(2) 已连接时照旧在转（旧失败不该让转圈消失，也不该让它假装在转当前状态）',
-    collect(panel.tree, (n) => String(n.props?.className ?? '').includes('review-mode-spin')).length === 1);
+  check('(2) 已连接但无审核进行中时不假装在生成',
+    collect(panel.tree, (n) => String(n.props?.className ?? '').includes('review-mode-spin')).length === 0);
 }
 
 // ── 场景 B：本进程里刚失败 → 仍然是「跑不起来」（老纪律）──

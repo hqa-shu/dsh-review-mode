@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {setTarget, currentTarget} from '../reviewer.js';
+import {setTarget, currentTarget, evidenceFromEvents} from '../reviewer.js';
 import * as mod from '../index.js';
 const ticks=[], commands=new Map(), starts=[], events=[];
 const original=globalThis.setInterval;
@@ -25,3 +25,7 @@ assert.equal(selected.evidence.youSaid[0],'制定30分钟Python复习计划');
 await new Promise(r=>setTimeout(r,20));assert.equal(starts.length,1);
 assert.equal(JSON.parse(run('ping').text).selection.kind,'self');
 console.log('PASS 本会话一步取证、派单并回报所选目标');
+const actualShape=evidenceFromEvents([{type:'assistant/message',data:{message:{role:'assistant',content:[{type:'reasoning',text:'hidden'},{type:'text',text:'先做一道Python题'}]}}}]);
+assert.deepEqual(actualShape.otherSaid,['先做一道Python题']);
+assert(!starts[0].prompt[0].text.includes('其余角度有证据就写'));
+console.log('PASS SDK真实assistant/message形状保留AI原话且不含推理内容');

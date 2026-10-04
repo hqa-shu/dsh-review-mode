@@ -24,12 +24,13 @@ for (const p of walk(root)) {
   }
   if (/\.(json|yml|md|js|mjs|svg)$/.test(p)) {
     const text = fs.readFileSync(p,'utf8');
-    if (/\/Users\/hqa\b|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(text)) check(`Private-data scan: ${rel}`,false);
+    if (/\/Users\/(?!example\/)[A-Za-z0-9._-]+\/(?:Documents|Desktop|Downloads)\b|--Users-(?!example-)[A-Za-z0-9._-]+-(?:Documents|Desktop|Downloads)-|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(text)) check(`Private-data scan: ${rel}`,false);
   }
 }
 for (const name of ['README.md','README.zh-CN.md']) {
   check(`${name} marks development status`, /under development|正在开发中/.test(fs.readFileSync(path.join(root,name),'utf8')));
 }
-check('SDK dependency declared', pkg.dependencies?.['@deepseek-ai/dsh-typert-protocol'] === '0.2.0-rc.2');
+check('Portable test command declared', pkg.scripts?.test === 'node test/run.mjs');
+check('No third-party runtime dependency', !pkg.dependencies || Object.keys(pkg.dependencies).length === 0);
 if (!failures) console.log('PASS syntax and public-package checks');
 process.exitCode = failures ? 1 : 0;

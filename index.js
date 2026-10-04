@@ -195,6 +195,8 @@ function normalizeVerdictRecord(value) {
   if (value === null || typeof value !== 'object') return null;
   const analysis = normalizeAnalysisFields(value);
   return {
+    targetKey: String(value.targetKey ?? ''),
+    targetTitle: String(value.targetTitle ?? ''),
     verdict: String(value.verdict ?? 'unknown'),
     lane: LANES.includes(value.lane) ? value.lane : 'me',
     // **形状由 `rubric.js` 的 ANALYSIS_SECTIONS 决定**，跟着结论一起过投影 ——
@@ -245,12 +247,16 @@ function normalizeFeedEntry(value) {
     turn: toCount(value.turn),
     // `review` = 自动生成的评价；`qa` = 针对某条评价的问答。同一个流，两种条目。
     kind: value.kind === 'qa' ? 'qa' : 'review',
+    targetKey: String(value.targetKey ?? ''),
+    targetTitle: String(value.targetTitle ?? ''),
     verdict: String(value.verdict ?? 'unknown'),
     lane: LANES.includes(value.lane) ? value.lane : 'me',
     question: shorten(String(value.question ?? ''), 200),
+    reviewId: String(value.reviewId ?? `${value.at}:${value.turn}`),
+    qaId: String(value.qaId ?? ''),
     sections: ANALYSIS_SECTIONS,
     ...analysis,
-    text: shorten(String(value.text ?? leadingLine(analysis)), 200),
+    text: shorten(String(value.text ?? leadingLine(analysis)), value.kind === 'qa' ? 1600 : 200),
     cost: toCount(value.cost),
   };
 }
@@ -294,7 +300,9 @@ function normalizeQaEntry(value) {
     verdict: 'unknown',
     lane: LANES.includes(value.lane) ? value.lane : 'me',
     question: shorten(question, 200),
-    text: shorten(answer, 300),
+    reviewId: String(value.reviewId ?? ''),
+    qaId: String(value.qaId ?? ''),
+    text: shorten(answer, 1600),
     sections: ANALYSIS_SECTIONS,
     headline: shorten(answer, 80),
     dialog: [], summary: '', analysis: [], advice: [],
@@ -385,6 +393,8 @@ function normalizeStream(value) {
   const analysis = normalizeAnalysisFields(value);
   return {
     lane: LANES.includes(value.lane) ? value.lane : 'me',
+    targetKey: String(value.targetKey ?? ''),
+    targetTitle: String(value.targetTitle ?? ''),
     verdict: String(value.verdict ?? 'unknown'),
     sections: ANALYSIS_SECTIONS,
     ...analysis,
@@ -1635,7 +1645,7 @@ export function apply(ctx, config) {
         // v7：新增 stream —— 流式复审的半成品，让面板一段一段长出来。
         //     同一版曾把结论改成「三路一起审」的固定表格；**那张表在 2026-10 被用户推翻**
         //     （「有点呆」），现在是 rubric.js 的四段自适应分析（见 FLOW.md bug 53）。
-        stateVersion: 7,
+        stateVersion: 8,
         init: () => ({
           turn: 0, toolCalls: 0, totalToolCalls: 0, turnStartSeq: 0,
           reviews: 0, feed: [], trajectory: [], issues: [], resolved: [], last: null, stream: null,
@@ -1707,25 +1717,7 @@ export function apply(ctx, config) {
     }
   }
 
-  ctx.on('agent/turn-stopping', ({ agent, turn }) => {
-    if (inflight.has(agent)) return;
-    if (!shouldReview(agent)) return;
-    // 这个回合已经由 A 路 / 面板按钮派过一次复审了 —— 收尾时绝不再审一遍。
-    const token = turnToken(agent);
-    if (token !== null && directedTurns.get(agent) === token) {
-      directedTurns.delete(agent);
-      trace({ turn, skip: 'generic-review-suppressed-by-directed', token });
-      return;
-    }
-    if (toolCallsThisTurn(agent) < cfg.minToolCalls) return;
-    // 绝不阻塞这一轮的收尾：复审在后台跑，结论稍后作为通知注入。
-    ctx.agents
-      .withoutInitiator(() => runReview(ctx, cfg, agent, turn, inflight, liveness))
-      .catch((error) => {
-        ctx.logger.warn(`review-mode: review driver failed: ${errorText(error)}`);
-      });
-  });
-
+  // Selected targets are reviewed by the message-edge watcher, including tool-free turns.
   // ── Codex 监控器：你在那边干活，这边自动审 ──────────────────
   //
   // 规则（用户 2026-10 改成「以我发问为节点」）：盯住用户点选的那条对话，
@@ -1814,6 +1806,16 @@ export function apply(ctx, config) {
    * 也会污染 Agent 的上下文，代价远大于收益。
    */
   const streams = new Map();
+  const directedRuns = new Map();
+
+  function abortable(promise, signal) {
+    if (signal.aborted) return Promise.reject(signal.reason);
+    return new Promise((resolve, reject) => {
+      const cancel = () => reject(signal.reason);
+      signal.addEventListener('abort', cancel, { once: true });
+      Promise.resolve(promise).then(resolve, reject).finally(() => signal.removeEventListener('abort', cancel));
+    });
+  }
 
   /** 已经长出内容的段落数 —— 用来判断「新的一段成型了，该推一次」。 */
   function filledSectionCount(text) {
@@ -1826,6 +1828,7 @@ export function apply(ctx, config) {
 
   /** 把一个流式半成品投递给父会话，让投影长出 `stream`，面板就能一段一段画。 */
   function pushStream(stream) {
+    if (stream.controller?.signal.aborted) return;
     const parsed = parseAnalysis(stream.text);
     try {
       appendReviewSurface(stream.parent, 'stream', {
@@ -1872,6 +1875,7 @@ export function apply(ctx, config) {
    * 贵的那次复审只在**边沿**上跑一次 —— 不是定时的、也不问用户。
    */
   let watch = null;
+  const watchCounts = new WeakMap();
   const WATCH_SCAN = 1000;
 
   /**
@@ -1951,9 +1955,17 @@ export function apply(ctx, config) {
    * @returns {Promise<object|null>} 折进投影的结论；复审员没吐内容时 null。
    */
   async function runDirectedReview(parent, job) {
+    const reviewTarget=currentTarget(parent?.id);
     const lane = LANES.includes(job?.lane) ? job.lane : 'me';
     const label = job?.label ?? `审核 · ${LANE_LABELS[lane] ?? '审我'}`;
+    const signature = `${lane}:${String(job?.promptText ?? '')}`;
+    const previousRun = directedRuns.get(parent);
+    if (previousRun?.signature === signature) return null;
+    previousRun?.controller.abort(new Error('已切换审核目标'));
     const controller = new AbortController();
+    const ticket = { controller, signature };
+    directedRuns.set(parent, ticket);
+    const timeout = setTimeout(() => controller.abort(new Error(`审核超时（${Math.round(cfg.reviewTimeoutMs / 1000)}秒），请重试`)), cfg.reviewTimeoutMs);
     // **复审一开跑就先在投影里立「进行中」**：面板据此区分「还没有任何评价」（真空）
     // 与「复审员正在写」（在跑）。没有这一步，用户在复审那几十秒里看到的和
     // 「什么都没发生」一模一样，而结论可能晚一步才到 —— 那正是用户抓到的现场。
@@ -1965,7 +1977,7 @@ export function apply(ctx, config) {
     if (markedTurn !== null) directedTurns.set(parent, markedTurn);
     let run;
     try {
-      run = await ctx.subagents.start(cfg.provider, {
+      const starting = ctx.subagents.start(cfg.provider, {
         label,
         prompt: [{ type: 'text', text: String(job?.promptText ?? '') }],
         parent,
@@ -1975,17 +1987,21 @@ export function apply(ctx, config) {
         // 模型配置跟主对话，上下文各自独立（见 `reviewerAgentOptions`）。
         ...reviewerAgentOptions(parent, liveness),
       });
+      starting.then?.(late => { if (controller.signal.aborted) void late?.dispose?.().catch?.(() => {}); }, () => {});
+      run = await abortable(starting, controller.signal);
     } catch (error) {
       // 起都起不来：面板必须说「失败 + 真因」，不能继续显示空状态/进行中。
-      publishReviewState(parent, 'failed', { lane, label, at: Date.now(), message: errorText(error) });
+      if (directedRuns.get(parent) === ticket) publishReviewState(parent, 'failed', { lane, label, at: Date.now(), message: errorText(error) });
+      clearTimeout(timeout);
+      if (directedRuns.get(parent) === ticket) directedRuns.delete(parent);
       throw error;
     }
     // 登记流式缓冲：`agent/assistant-stream` 的帧按 run.id 认领。
-    const stream = { parent, lane, text: '', emitted: 0 };
+    const stream = { parent, lane, text: '', emitted: 0, controller };
     const streamId = run?.id ?? run?.localAgent?.id;
     if (streamId !== undefined && streamId !== null) streams.set(streamId, stream);
     try {
-      const result = await run.result;
+      const result = await abortable(run.result, controller.signal);
       const text = contentText(result?.output) || String(result?.diagnostic ?? '');
       if (text.trim().length === 0) {
         publishReviewState(parent, 'failed', { lane, label, at: Date.now(), message: '复审员没有输出任何内容' });
@@ -1993,12 +2009,17 @@ export function apply(ctx, config) {
       }
       // 折进记忆的那一刻，投影会把它变成面板上的一张卡片（并清掉 stream / pending / failure）。
       const parsed = parseAnalysisVerdict(text, parent.session.seq ?? 0, lane);
-      deliver(ctx, parent, { ...parsed, digestChars: text.length, dropped: [] });
+      if (directedRuns.get(parent) !== ticket || controller.signal.aborted) return null;
+      if (!deliver(ctx, parent, { ...parsed, targetKey:reviewTarget ? `${reviewTarget.kind}:${reviewTarget.id}` : '',targetTitle:reviewTarget?.title ?? '',digestChars: String(job?.promptText ?? '').length, dropped: [] })) {
+        throw new Error('审核已生成，但结果未能保存到面板，请重试');
+      }
       return parsed;
     } catch (error) {
-      publishReviewState(parent, 'failed', { lane, label, at: Date.now(), message: errorText(error) });
+      if (directedRuns.get(parent) === ticket) publishReviewState(parent, 'failed', { lane, label, at: Date.now(), message: errorText(error) });
       throw error;
     } finally {
+      clearTimeout(timeout);
+      if (directedRuns.get(parent) === ticket) directedRuns.delete(parent);
       if (streamId !== undefined && streamId !== null) streams.delete(streamId);
       await run.dispose().catch(() => {});
     }
@@ -2041,6 +2062,14 @@ export function apply(ctx, config) {
    */
   function startPanelReview(parent, job) {
     if (parent === undefined || parent === null) return Promise.resolve(null);
+    const target=currentTarget(parent.id);
+    if(target) {
+      try {
+        const evidence=target.kind==='self' ? evidenceFromEvents(parent.session.snapshotEvents(),target.lane) : conversationEvidence(target.kind,target.id,target.lane);
+        const count=target.kind==='codex' ? Number(String(evidence.stats).match(/你说 (\d+) 条/)?.[1] ?? evidence.youSaid.length) : evidence.youSaid.length;
+        watchCounts.set(parent,{key:`${target.kind}:${target.id}:${target.lane}`,count});
+      }catch{}
+    }
     const fire = () => runDirectedReview(parent, job);
     try {
       const pending = typeof ctx.agents?.withoutInitiator === 'function'
@@ -2083,6 +2112,7 @@ export function apply(ctx, config) {
         note: '没有活着的审核会话可以承载这次复审，这次**没有生成任何评价**，审核面板上也不会有东西。请如实告诉用户。',
       };
     }
+    setTarget({kind:request.kind,id:request.id,title:request.title,lane,ownerId:parent.id});
     const evidence = request?.evidence;
     if (evidence === null || typeof evidence !== 'object') {
       return {
@@ -2117,55 +2147,27 @@ export function apply(ctx, config) {
     try {
       const targets = ctx.agents.list().filter((agent) => shouldReview(agent));
       if (targets.length === 0) return;
-      const picked = currentTarget();
-      // 未选目标时保持等待，不能擅自审核另一条 Codex 对话。
-      if (picked === null) { liveness.targetId = null; watch = null; return; }
-      const active = resolveWatchEntry(picked);
-      liveness.targetId = active?.id ?? null;
-      trace({ tick: true, picked: picked?.id ?? null, watching: active?.id ?? null, targets: targets.length });
-      if (active === null) return;
-      if (picked !== null && picked.kind !== 'codex') {
-        trace({ picked: picked.id, skipped: `暂不支持 kind=${picked.kind} 的点选（只做了 Codex）` });
-        return;
+      for (const parent of targets) {
+        const picked=currentTarget(parent.id);
+        if(!picked || picked.paused)continue;
+        let evidence;
+        try {
+          if(picked.kind==='self') {
+            const events=parent.session.snapshotEvents();
+            const lastStart=events.findLastIndex(e=>e.type==='turn/start');
+            if(lastStart>=0 && !events.slice(lastStart).some(e=>e.type==='turn/end'))continue;
+            evidence=evidenceFromEvents(events,picked.lane);
+          } else evidence=conversationEvidence(picked.kind,picked.id,picked.lane);
+        } catch(error) { ctx.logger.warn(`review-mode: target unreadable: ${errorText(error)}`);continue; }
+        const key=`${picked.kind}:${picked.id}:${picked.lane}`;
+        const count=picked.kind==='codex' ? Number(String(evidence.stats).match(/你说 (\d+) 条/)?.[1] ?? evidence.youSaid.length) : evidence.youSaid.length;
+        const previous=watchCounts.get(parent);
+        watchCounts.set(parent,{key,count});
+        liveness.targetId=picked.id;
+        // First sight after selection/restart only seeds the cursor; manual selection already reviewed.
+        if(!previous || previous.key!==key || count<=previous.count)continue;
+        void startPanelReview(parent,{lane:picked.lane,promptText:renderEvidencePrompt(evidence,picked.lane),label:`审核 · ${LANE_LABELS[picked.lane]} · ${clip(evidence.title,40)}`});
       }
-
-      // **便宜的检测**：只读这一条对话，数出「用户说了几条」。合并后的 entry 会
-      // 把这条对话的每一份 rollout 都算上，所以拆成几份也不会漏掉新的那一条。
-      const read = readCodex({ id: active.id, threadId: codexThreadId(active.files[active.files.length - 1].file), files: active.files });
-      const switched = watch === null || watch.id !== active.id;
-      const previous = switched ? undefined : watch.count;
-      const edge = nextReviewEdge(previous, read.askCount);
-      watch = { id: active.id, lane: active.lane, files: active.files, count: edge.count };
-      // 用户**点选**了一条新对话时，0 句的对话在「审对话 / 审 Agent」两条线上也要立刻给一次评价
-      // —— 因为没有「新的用户消息」这个节点可用，选择本身就是节点。
-      const selectionFire = switched && active.lane !== 'me' && (read.askCount > 0 || read.otherCount > 0);
-      trace({ edge: edge.fire, selectionFire, id: active.id, lane: active.lane,
-        userMessages: read.askCount, otherMessages: read.otherCount });
-      // **没有新的用户消息就不审** —— 绝不按定时器重复评价。
-      if (!edge.fire && !selectionFire) return;
-      const lane = active.lane;
-
-      // 到了边沿才走贵的那条路：读完整 rollout 抽证据。
-      const activity = readConversation(active.files, cfg.codexTailBytes);
-      trace({ reviewing: active.files.map((file) => path.basename(file.file)).join(' + '), lane, asks: activity?.asks.length ?? -1, notes: activity?.notes.length ?? -1 });
-      if (activity === null) return;
-      // 「审我」：用户没说话就没什么可审的（这一列没有主体）。
-      // 「审对话」「审 Agent」：用户没说话**照样审** —— 只要有东西可看。
-      if (lane === 'me' && activity.asks.length === 0) return;
-      if (lane !== 'me' && activity.asks.length === 0 && activity.notes.length === 0) return;
-      // 落点必须和**面板画的**同一份投影（bug 45 的最后一处）：面板现在只画
-      // 「正在主栏显示」的那条审核会话，而监控器原来按 `agents.list()` 的顺序取第一条 ——
-      // 同时开着两条审核会话时，它会把结论写进你看不见的那条，面板又空着。
-      // `panelSessionId` 由面板命令就地记下（见 `runPanelCommand`；面板每 20 秒一次
-      // 心跳，所以只要面板开着它就是当前在看的会话）。记不到 / 会话已关 → 退回老行为。
-      const parent = pickReviewParent(targets, liveness.panelSessionId);
-      // 和面板按钮**同一条管线**（`runDirectedReview`）：同一个 spawn、同一个流式认领、
-      // 同一个 parseAnalysisVerdict + user/message 投递。监控路的行为一个字没变。
-      await runDirectedReview(parent, {
-        lane,
-        promptText: renderLanePrompt(activity, lane),
-        label: `审核 · ${LANE_LABELS[lane] ?? '审我'}`,
-      });
     } catch (error) {
       ctx.logger.warn(`review-mode: Codex watch failed: ${errorText(error)}`);
     } finally {
@@ -2203,6 +2205,10 @@ export function apply(ctx, config) {
         handler: (invocation) => runPanelCommand(ctx, invocation?.agent, invocation?.rawInput, liveness, {
           // 复审**由宿主自己派**（和监控器同一条 `runDirectedReview` 管线），不唤醒主 Agent。
           startReview: (job) => startPanelReview(invocation?.agent, job),
+          stopReview: () => {
+            directedRuns.get(invocation?.agent)?.controller.abort(new Error('已停止本次审核'));
+            return {kind:'success',text:'已停止本次审核'};
+          },
         }),
       }), 'review-mode.command()');
     });
@@ -2235,6 +2241,8 @@ export function apply(ctx, config) {
   });
 
   ctx.on('agent/disposed', ({ agent }) => {
+    directedRuns.get(agent)?.controller.abort(new Error('agent disposed'));
+    directedRuns.delete(agent);
     const controller = inflight.get(agent);
     if (controller !== undefined) {
       inflight.delete(agent);
@@ -2248,6 +2256,8 @@ export function apply(ctx, config) {
         controller.abort(new Error('review-mode unloaded'));
       }
       inflight.clear();
+      for(const ticket of directedRuns.values())ticket.controller.abort(new Error('review-mode unloaded'));
+      directedRuns.clear();
     },
     'review-mode.teardown()',
   );
@@ -2297,6 +2307,10 @@ function foldReviewMessage(state, message) {
  */
 function applyEvent(state, event) {
   switch (event?.type) {
+    case 'command/done': {
+      const update=event.data?.reviewUpdate;
+      return update?.kind===SOURCE_KIND ? foldReviewMessage(state,{source:update}) : state;
+    }
     case 'turn/start': {
       const turn = Number(event.data?.turn ?? 0);
       if (state.turn === turn && state.toolCalls === 0) return state;
@@ -2392,7 +2406,9 @@ function foldReviewIntoState(state, review) {
   const card = {
     at,
     turn: review.turn,
+    reviewId: `${at}:${review.turn}`,
     kind: 'review',
+    targetKey:review.targetKey, targetTitle:review.targetTitle,
     verdict: review.verdict,
     lane: review.lane ?? 'me',
     question: '',
@@ -2506,7 +2522,7 @@ function formatBlockLines() {
 function rubricPreamble(focus) {
   return [
     '你是「审核模式」的复审员。你审的是**这件事本身**，不是一张表。',
-    `本次用户点选的是「${LANE_LABELS[focus]}」这条线，所以分析要从这个角度切入；其余角度有证据就写，没证据就说「证据里没有」。`,
+    `当前侧重点是「${LANE_LABELS[focus]}」。只写一份2~4条洞察，不分别给每个角度做清单。依据可以来自完整往返，建议只面向当前侧重点。`,
     '',
     ANALYSIS_RUBRIC,
   ];
@@ -2822,8 +2838,8 @@ function reviewerAgentOptions(agent, liveness) {
   // `agents.list()` 里挑出来的那条更权威 —— 用户点的就是当前这条会话。
   // 优先级：主对话（面板命令记下的）> 被复审的那条 > 不传。
   const recorded = liveness !== null && typeof liveness === 'object' ? liveness.modelSelection : undefined;
-  const selection = (recorded !== undefined && recorded !== null ? recorded : undefined)
-    ?? reviewerModelSelection(agent);
+  const selection = reviewerModelSelection(agent)
+    ?? (recorded !== undefined && recorded !== null ? recorded : undefined);
   if (selection === undefined || selection === null) return {};
   return { agentOptions: { ...selection } };
 }
@@ -2924,12 +2940,12 @@ function selfReviewJob(agent, lane) {
 function panelDir(agent, kindArg, startReview) {
   const kind = TARGET_KINDS.includes(kindArg) ? kindArg : 'codex';
   if (kind === 'self') {
-    const lane = LANES.includes(currentTarget()?.lane) ? currentTarget().lane : 'me';
+    const lane = LANES.includes(currentTarget(agent?.id)?.lane) ? currentTarget(agent?.id).lane : 'me';
     const events = agent?.session?.snapshotEvents?.() ?? [];
     const evidence = evidenceFromEvents(events, lane);
-    setTarget({ kind: 'self', id: String(agent?.id ?? agent?.session?.header?.id ?? ''), title: evidence.title, lane });
+    setTarget({ kind: 'self', id: String(agent?.id ?? agent?.session?.header?.id ?? ''), title: '本会话', lane, ownerId:agent.id });
     if (typeof startReview === 'function') startReview(selfReviewJob(agent, lane));
-    return { kind: 'success', text: JSON.stringify({ kind, self: true, evidence, selected: currentTarget(), total: 0, recent: [], groups: [] }) };
+    return { kind: 'success', text: JSON.stringify({ kind, self: true, evidence, selected: currentTarget(agent?.id), total: 0, recent: [], groups: [] }) };
   }
   const directory = buildTargets({ kind, limit: 200 });
   return { kind: 'success', text: JSON.stringify(directory) };
@@ -2946,11 +2962,11 @@ function panelDir(agent, kindArg, startReview) {
  * @param {function} [startReview] - 宿主注入的点火器。
  * @returns {object} 命令结果（`text` 是 `{ok, evidence}` JSON）。
  */
-function panelPick(kindArg, idArg, startReview) {
+function panelPick(agent, kindArg, idArg, startReview) {
   const kind = TARGET_KINDS.includes(kindArg) ? kindArg : 'codex';
   const id = typeof idArg === 'string' ? idArg : '';
   if (id.length === 0) return { kind: 'error', text: 'pick 需要对话 id' };
-  const lane = LANES.includes(currentTarget()?.lane) ? currentTarget().lane : 'me';
+  const lane = LANES.includes(currentTarget(agent?.id)?.lane) ? currentTarget(agent?.id).lane : 'me';
   const evidenceKind = kind === 'codex' ? 'codex' : 'dsh';
   let evidence;
   try {
@@ -2958,7 +2974,7 @@ function panelPick(kindArg, idArg, startReview) {
   } catch (error) {
     return { kind: 'error', text: `取证据失败：${errorText(error).slice(0, 160)}` };
   }
-  setTarget({ kind, id, title: evidence?.title ?? id, lane });
+  setTarget({ kind, id, title: evidence?.title ?? id, lane, ownerId:agent.id });
   if (typeof startReview === 'function') {
     startReview({
       lane,
@@ -2966,7 +2982,7 @@ function panelPick(kindArg, idArg, startReview) {
       label: `审核 · ${LANE_LABELS[lane] ?? '审我'} · ${clip(evidence?.title ?? id, 40)}`,
     });
   }
-  return { kind: 'success', text: JSON.stringify({ ok: true, evidence }) };
+  return { kind: 'success', text: JSON.stringify({ ok: true, evidence,selected:currentTarget(agent?.id) }) };
 }
 
 /**
@@ -2977,11 +2993,13 @@ function panelPick(kindArg, idArg, startReview) {
  * @param {string} question - 用户的问题。
  * @returns {object} 命令结果（`text` 就是回答）。
  */
-function panelAsk(ctx, agent, question) {
+function panelAsk(ctx, agent, question, reviewId, qaId) {
   const text = String(question ?? '').trim();
   if (text.length === 0) return { kind: 'error', text: 'ask 需要问题' };
   if (agent === undefined || agent === null) return { kind: 'error', text: '没有活着的审核会话' };
-  const last = lastReviewCard(ctx, agent);
+  const state = ctx.sessionProjections?.stateOf(agent.session, 'reviewMode');
+  const last = reviewId ? state?.feed?.find(card => card.kind !== 'qa' && String(card.reviewId ?? `${card.at}:${card.turn}`) === reviewId) : lastReviewCard(ctx, agent);
+  if (reviewId && !last) return {kind:'error',text:'这条历史评价已不在保留范围内，请选择另一条评价。'};
   const answer = answerFromTable(text, last);
   /* 回答**以命令的同步回执为准**：面板拿到 `text` 就直接画在你打字的框下面，
    * 不依赖任何异步通道（bug 54：旧实现把回执丢掉，只指望面事件落地，于是
@@ -2995,7 +3013,9 @@ function panelAsk(ctx, agent, question) {
     delivered = appendReviewSurface(agent, 'qa', {
       question: text,
       answer,
-      lane: LANES.includes(currentTarget()?.lane) ? currentTarget().lane : 'me',
+      reviewId: String(last?.reviewId ?? `${last?.at}:${last?.turn}`),
+      qaId: qaId || `${Date.now()}:${Math.random()}`,
+      lane: LANES.includes(currentTarget(agent?.id)?.lane) ? currentTarget(agent?.id).lane : 'me',
       turn: Number(last?.turn ?? 0),
       headline: String(last?.headline ?? ''),
     }, `问：${text}\n→ ${answer}`);
@@ -3021,7 +3041,7 @@ function panelAsk(ctx, agent, question) {
  * @param {object} liveness - 宿主侧的活性记录（在 `apply` 里创建）。
  * @returns {object} `{kind:'success', text}`，`text` 是活性快照 JSON。
  */
-function panelPing(liveness) {
+function panelPing(liveness, ownerId) {
   const now = Date.now();
   const snapshot = liveness !== null && typeof liveness === 'object' ? liveness : {};
   const lastTickAt = Number.isFinite(snapshot.lastTickAt) ? snapshot.lastTickAt : null;
@@ -3058,7 +3078,7 @@ function panelPing(liveness) {
       panelSessionId: typeof snapshot.panelSessionId === 'string' && snapshot.panelSessionId.length > 0
         ? snapshot.panelSessionId
         : null,
-      selection: currentTarget(),
+      selection: currentTarget(ownerId),
       uptimeMs: Number.isFinite(snapshot.startedAt) ? Math.max(0, now - snapshot.startedAt) : null,
       /* ── **版本戳**（2026-10-03 现场失败的止血）─────────────────────
        *
@@ -3133,6 +3153,7 @@ function pickReviewParent(targets, preferredId) {
  * @param {object} [deps] - `{startReview}`：宿主注入的复审点火器。
  * @returns {object} `{kind:'success'|'error', text}`。
  */
+const panelOutcomes = new WeakMap();
 function runPanelCommand(ctx, agent, rawInput, liveness, deps) {
   const parts = String(rawInput ?? '').trim().split(/\s+/).filter((part) => part.length > 0);
   const verb = parts[0] ?? '';
@@ -3150,12 +3171,44 @@ function runPanelCommand(ctx, agent, rawInput, liveness, deps) {
       // 心跳同时要回答「审核到底跑不跑得起来」：把最近一次 `turn/end` 的结论折进
       // 快照。**失败的那一轮不发 `agent/turn-stopping`**（见 `noteTurnOutcome`），
       // 所以只能在这里按需折；只读内存快照，零文件系统调用。
-      noteTurnOutcome(agent, liveness);
-      return panelPing(liveness);
+      const own=panelOutcomes.get(agent) ?? {outcomeFoldAt:0,turnOutcome:null};
+      noteTurnOutcome(agent,own);panelOutcomes.set(agent,own);
+      return panelPing({...liveness,turnOutcome:own.turnOutcome},agent?.id);
     }
     if (verb === 'dir') return panelDir(agent, parts[1], deps?.startReview);
-    if (verb === 'pick') return panelPick(parts[1], parts[2], deps?.startReview);
+    if (verb === 'resume') {
+      const kind=parts[1], id=parts[2], lane=LANES.includes(parts[3]) ? parts[3] : 'me';
+      if (!TARGET_KINDS.includes(kind) || !id) return {kind:'error',text:'没有可恢复的目标'};
+      if (kind==='self' && id!==String(agent?.id)) return {kind:'error',text:'本会话目标已变化，请重新选择'};
+      const evidence = kind==='self' ? evidenceFromEvents(agent.session.snapshotEvents(),lane) : conversationEvidence(kind,id,lane);
+      if (!evidence?.youSaid?.length && !evidence?.otherSaid?.length) return {kind:'error',text:'目标已不可读，请重新选择'};
+      setTarget({kind,id,title:kind==='self' ? '本会话' : evidence.title,lane,ownerId:agent.id,paused:parts[4]==='on'});
+      return {kind:'success',text:JSON.stringify({evidence,selected:currentTarget(agent?.id)})};
+    }
+    if (verb === 'evidence') {
+      const target=currentTarget(agent?.id);
+      if(!target)return {kind:'error',text:'请先选择审核对象'};
+      const evidence=target.kind==='self' ? evidenceFromEvents(agent.session.snapshotEvents(),target.lane) : conversationEvidence(target.kind,target.id,target.lane);
+      return {kind:'success',text:JSON.stringify({selected:target,evidence})};
+    }
+    if (verb === 'pause' || verb === 'focus') {
+      const target=currentTarget(agent?.id);
+      if(!target)return {kind:'error',text:'请先选择审核对象'};
+      if(verb==='focus' && !LANES.includes(parts[1]))return {kind:'error',text:'未知审核侧重点'};
+      if(verb==='focus' && target.lane!==parts[1])deps?.stopReview?.();
+      const selected=setTarget({...target,...(verb==='pause' ? {paused:parts[1]!=='off'} : {lane:parts[1]})});
+      const evidence=selected.kind==='self' ? evidenceFromEvents(agent.session.snapshotEvents(),selected.lane) : conversationEvidence(selected.kind,selected.id,selected.lane);
+      return {kind:'success',text:JSON.stringify({selected,evidence})};
+    }
+    if (verb === 'refresh') {
+      const target=currentTarget(agent?.id);
+      if (!target) return {kind:'error',text:'请先选择审核对象'};
+      return target.kind==='self' ? panelDir(agent,'self',deps?.startReview) : panelPick(agent,target.kind,target.id,deps?.startReview);
+    }
+    if (verb === 'pick') return panelPick(agent, parts[1], parts[2], deps?.startReview);
     if (verb === 'ask') return panelAsk(ctx, agent, parts.slice(1).join(' '));
+    if (verb === 'ask-card') return panelAsk(ctx, agent, parts.slice(3).join(' '), decodeURIComponent(parts[1] ?? ''), parts[2]);
+    if (verb === 'stop') return deps?.stopReview?.() ?? {kind:'error',text:'当前宿主不支持停止审核'};
     return { kind: 'error', text: `未知的面板动词：${verb || '(空)'}` };
   } catch (error) {
     return { kind: 'error', text: `面板指令失败：${errorText(error).slice(0, 160)}` };
@@ -3208,117 +3261,27 @@ function deliver(ctx, agent, verdict) {
   }
 }
 
-/**
- * 投递一条复审内容 —— **面板看得见，对话记录里看不见**。
- *
- * 这条是这次改动的核心。以前用 `agent.inject(userMessage)`：那条消息会被 Agent
- * 在下一个 step 收进 `user/message` 面事件，于是**评价直接长在对话记录里**，
- * 而面板（读 `reviewMode` 投影）反而空着。用户的原话：
- * 「我希望的是就是你审核的结果……输出在下面（审核那边），上面的话，我提问了，
- * 你在回答我」。所以评价必须走一条「投影折得到、对话不渲染」的路。
- *
- * 选中的是 **`user/message` + 生产者自有的 `source.kind`**（不是 `developer/message`）。
- * 这是 2026-10 一次性修掉两个真失败之后的结论，判据全部来自 shipped 源码：
- *
- * **为什么不能用 `developer/message`（真发生过，面板的诚实活性行抓到）**
- *   它是**步事件**（step-scoped），必须带真实的 `turn`/`step`：
- *   - `dsh-session-format-v3-to-v4/lib/index.js:324`
- *     `sessionFormatCount(data[field], \`developer/message ${field}\`)` ——
- *     `turn`/`step` 缺失/非非负安全整数时抛出的正是面板上那句
- *     `developer/message turn must be a non-negative safe integer`；
- *   - 同文件 `:241` 的表（生命周期关系）写死「`system/message`、`developer/message`、
- *     `assistant/attempt` 必须 match an open turn and step」；实现是同文件
- *     `Relationships.accept` → `requireStep`（`:743` / `:735` 附近）。
- *   而我们的评价是**异步**产物（复审子 Agent 跑完、监控 tick），投递时**没有任何开着的 step**
- *   —— 实测（真 `restoreReleasedV4Artifact`）：补上 turn/step 也仍然报
- *   `developer/message does not match an open turn and step`。
- *   即：这条事件类型在结构上就不可能由插件在带外投放。继续传 `undefined` 只会让
- *   整个会话在下次读盘时被格式校验拒绝。
- *
- * **为什么 `user/message` 既合法、又不在对话流里显示、模型还看得到**
- *   1. 它是 5 个**面事件**之一，模型看得到：`dsh-session/lib/index.js:154-160`
- *      （SURFACE_EVENT_TYPES）；`user/message` 的 payload 就是消息本身
- *      （`{role,id,content,source}`），append 必须带 `surfaceOp:'append'`
- *      （`dsh-session/lib/types/surface.js` 的 `surfaceOpOf`）。
- *   2. **不是步事件**：`dsh-session-format-v3-to-v4/lib/index.js` 的 `STEP_EVENT_TYPES`
- *      只有 `system/message` / `developer/message` / `assistant/attempt`，所以
- *      `user/message` 没有 `turn`/`step` 要求（同文件 `assertV4DeveloperData:315-330`
- *      只对 `developer/message` 校验 turn/step）。
- *   3. 只要求 `source.kind` 是**生产者自有**且非空、且不等于 `"plugin"`：
- *      同文件 `source()`（`:125-128`）。我们的 `source.kind = 'review-mode'`。
- *   4. **对话记录里看不见**：`dsh-client-ui-chat/lib/client.js:9267-9297`
- *      的 `messageDefinition.start` —— 只要 `event.data.source.kind !== "user"`，
- *      节点就是 `contextMessage` → `kind:'context'`（同文件 `:9251-9261`）；
- *      而 `:7719` 的 `isVisibleChatNode` 明确排除 `kind === "context"`
- *      （除非内容带 `tool-addition`/`tool-removal` 块，我们没有）。
- *      所以「投 `user/message` 就会出现在对话里」只对 `source.kind === "user"` 成立。
- *   5. 我们的投影照折：`applyEvent` 的 `user/message` 分支只认 `source.kind === SOURCE_KIND`。
- *
- * 会话没有 `append`（测试替身 / 老宿主上下文）时**退回 `agent.inject`** ——
- * 那条路会让评价出现在对话里，但功能不丢。返回 true 表示走了非对话可见的路。
- * @param {object} agent - 目标 Agent。
- * @param {string} form - `notice` / `stream` / `qa` / `panel`。
- * @param {object} review - 投影要折的负载。
- * @param {string} text - 模型会读到的正文。
- * @returns {boolean} 是否走了非对话可见的那条路。
+/** Panel updates are durable log-only command events. They never enter the model surface.
+ * A paired known lifecycle is used because this host cannot mark custom events ignorable.
+ * Keep the historical function name for compatibility with imported tests/plugins.
  */
 function appendReviewSurface(agent, form, review, text) {
-  const message = createUserMessage({
-    content: [{ type: 'text', text }],
-    source: {
-      kind: SOURCE_KIND,
-      form,
-      summary: form === 'stream'
-        ? `复审流式 · ${LANE_LABELS[review?.lane] ?? ''}`
-        : `冷静审核 ${review?.verdict ?? ''} · 第 ${review?.turn ?? 0} 轮`,
-      review,
-    },
-  });
-  const session = agent?.session;
-  if (typeof session?.append === 'function') {
-    try {
-      // `user/message` 的 payload 就是消息本身（不像 developer/message 要包在 `message` 里）。
-      session.append('user/message', message, { surfaceOp: 'append' });
-      trace({ deliver: 'user-message', form, seq: Number(session.seq ?? 0) });
-      return true;
-    } catch (error) {
-      // 面事件被拒（比如恰好撞上并发的替换）不能让复审内容丢掉 —— 退回 inject。
-      trace({ deliver: 'user-message-failed', form, why: errorText(error).slice(0, 140) });
-    }
-  }
-  agent.inject(message);
-  trace({ deliver: 'inject(transcript-visible)', form });
-  return false;
-}
-
-/**
- * 投递一条**进度**（`pending` / `failed`）—— 和 {@link appendReviewSurface} 同一条
- * `developer/message` 面事件路，但**绝不退回 `agent.inject`**。
- *
- * 为什么单独一个函数：`appendReviewSurface` 的 fallback 是为了「结论不能丢」；
- * 进度提示没有这个必要 —— 它一旦落进 `user/message` 就会显示在对话记录里，
- * 而这次改动要求「上面只有你问我答」。所以宿主会话不支持面事件时，直接不投。
- * @param {object} agent - 目标 Agent。
- * @param {string} form - `pending` / `failed`。
- * @param {object} review - 投影要折的负载。
- * @param {string} text - 模型会读到的正文（一句话）。
- * @returns {boolean} 是否真的 append 成功。
- */
-function appendReviewSurfaceOnly(agent, form, review, text) {
   const session = agent?.session;
   if (typeof session?.append !== 'function') return false;
-  const message = createUserMessage({
-    content: [{ type: 'text', text }],
-    source: {
-      kind: SOURCE_KIND,
-      form,
-      summary: form === 'pending' ? '冷静审核 · 复审进行中' : '冷静审核 · 复审失败',
-      review,
-    },
-  });
-  session.append('user/message', message, { surfaceOp: 'append' });
-  trace({ deliver: 'user-message', form });
-  return true;
+  const commandId = `review-${randomUUID()}`;
+  try {
+    session.append('command/run', {commandId, name:'review-mode', source:{kind:SOURCE_KIND}});
+    session.append('command/done', {commandId, kind:'success', reviewUpdate:{kind:SOURCE_KIND,form,review}});
+    trace({deliver:'log-only',form,seq:Number(session.seq ?? 0)});
+    return true;
+  } catch (error) {
+    trace({deliver:'log-only-failed',form,why:errorText(error).slice(0,140)});
+    return false;
+  }
+}
+
+function appendReviewSurfaceOnly(agent, form, review, text) {
+  return appendReviewSurface(agent, form, review, text);
 }
 
 // 给 `test/surface-test.mjs` 复用：用**真的 `Session` 类**验证这条投递真的被

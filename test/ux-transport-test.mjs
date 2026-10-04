@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {Session} from '@deepseek-ai/dsh-session';
+import {validateStoredEvents} from '@deepseek-ai/dsh-session-persistence';
+import {appendReviewSurface,applyEvent} from '../index.js';
+const session=Session.create('ux-log-probe');
+const review={at:1,turn:1,lane:'me',verdict:'on-track',headline:'合成记录',analysis:['标题｜依据：合成原话｜洞察：说明｜建议：操作'],advice:['操作']};
+const agent={session,inject(){throw Error('Must not inject');}};
+for(const form of ['pending','notice','qa','failed'])assert(appendReviewSurface(agent,form,{...review,question:'第一条依据',answer:'合成依据',message:'已停止'},'MODEL_SHOULD_NOT_SEE_THIS'));
+assert.equal(session.deriveMessages().length,0);console.log('PASS 审核、进度、问答、失败均不进入真实SDK模型上下文');
+const events=session.snapshotEvents();validateStoredEvents({id:'ux-log-probe'},structuredClone(events),'probe://log');
+assert.equal(events.filter(e=>e.type==='command/run').length,4);assert.equal(events.filter(e=>e.type==='command/done').length,4);console.log('PASS 已知配对命令事件通过真实SDK持久化校验');
+let state={turn:1,reviews:0,feed:[],trajectory:[],issues:[],resolved:[],last:null,stream:null,pending:null,failure:null};
+for(const event of events)state=applyEvent(state,event);
+assert.equal(state.reviews,1);assert.equal(state.feed.length,2);assert.equal(state.failure.message,'已停止');console.log('PASS 记录重放后面板保留评价、问答和失败状态');
+assert.equal(appendReviewSurface({inject(){throw Error('No fallback');}},'notice',review,''),false);console.log('PASS 投递不支持时明确失败，禁止回退污染聊天');

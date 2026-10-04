@@ -2,7 +2,9 @@
 
 **给 AI 对话一个独立的复审视角。**
 
-**正在开发中，尚非稳定版本。** 这是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的社区实验插件，可以读取本机 Codex 对话。它不是 DeepSeek 或 OpenAI 官方产品；包内 `2.0.0` 是开发快照版本，不代表已正式发布。
+**正在开发中，尚非稳定版本。** 这是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的社区实验插件，可以读取本机 Codex 对话。它不是 DeepSeek 或 OpenAI 官方产品；包内 `2.1.0` 是经过本机体验测试的开发快照，不代表已正式发布。
+
+本版完成十轮真实修改、重启和模拟用户操作，另做五轮回归修复。面板显示可展开的短洞察；新结果提示可直达最新评价；重启后恢复目标、侧重点和暂停状态。详见[当前实现](CURRENT-IMPLEMENTATION.md)与[迭代记录](ITERATIONS.md)。模型判断仍需人工核对。
 
 [English](README.md) · [安装说明](docs/INSTALLATION.md) · [完整配置](docs/CONFIGURATION.md) · [架构](docs/ARCHITECTURE.md) · [开发路线](docs/ROADMAP.md)
 

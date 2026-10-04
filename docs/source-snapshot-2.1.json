@@ -1,0 +1,15 @@
+{
+  "version": "2.1.0",
+  "source": "tested local working copy plus public metadata merge",
+  "sha256": {
+    "index.js": "36f502e5ba66325cd22b44d27ef271e5d235dd6f37350bf5e4f1799734899f27",
+    "client.js": "94ba81685ecfc40cfc39c51b5e1eedce32ed0471fd04f8acbdf6de53bbbb8207",
+    "reviewer.js": "32b300fa45ec82c8fc6e3ba3b40bafbacb530b6fa597c32857bbfaba804d44a0",
+    "rubric.js": "7d4ce5c11c34702d78cfb744cbc347e9591b31dcb1b2aba06d7beaa8e202640d",
+    "remote.js": "c305d865057ca5f2b1f9c26993ea91b9346bcfa2f8ecf716731bdc54149bf1cf",
+    "cordis.patch.yml": "64f049dfd3fc43e3f3ede46eea263aa6154f29820f985756b70c286a5dcce584",
+    "package.json": "e0168e2e3b3e9457cb5f165652ee288572c6cc8fb16f3f940a4101879480e813",
+    "locale/en.json": "c92b5be6a367070523ed1f149b150bbd8fe8cbc39bba67cbc1ea0be1a47fcd6c",
+    "locale/zh.json": "251f0b84e58a68291e3589b9ef4001a611d81f47b550500079b1ad9077f4dc7b"
+  }
+}

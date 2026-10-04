@@ -1,0 +1,20 @@
+import assert from 'node:assert/strict';
+import {apply} from '../index.js';
+import {currentTarget} from '../reviewer.js';
+const commands=new Map(),ticks=[],calls=[];
+const make=id=>({id,options:{provider:'p',model:'m-'+id},session:{header:{id},seq:2,events:[{type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:'合成任务'+id}]}}],snapshotEvents(){return this.events;},append(type,data){this.events.push({type,data});}},inject(){throw Error('No injection');}});
+const a=make('a'),b=make('b'),agents=[a,b];
+const old=globalThis.setInterval;globalThis.setInterval=f=>{ticks.push(f);return 0;};
+const result={output:[{type:'text',text:'结论: on-track\n一句话: 合成结果\n## 具体对话\n- 合成原话\n## 对话概述\n合成案例\n## 分析\n- 可执行｜依据：任务｜洞察：下一步清楚｜建议：执行\n## 建议\n- 执行'}]};
+apply({logger:{warn(){},info(){}},reflect:{provide(){},get(){}},effect:f=>f(),on(){},inject(n,fn){fn({effect:f=>f(),commands:{register:d=>commands.set(d.name,d)}});},sessionProjections:{register(){},stateOf:()=> 'review'},agents:{list:()=>agents,get:id=>agents.find(a=>a.id===id),withoutInitiator:f=>f()},subagents:{start:async(n,req)=>{calls.push(req);return {id:'c'+calls.length,result:Promise.resolve(result),dispose:async()=>{}};}}},{watchCodex:true});globalThis.setInterval=old;
+const run=(agent,rawInput)=>commands.get('review-mode').handler({agent,rawInput});
+const wait=()=>new Promise(r=>setTimeout(r,10));
+const ask=(a,text)=>a.session.events.push({type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text}]}});
+run(a,'dir self');run(b,'dir self');await wait();assert.equal(calls.length,2);assert.equal(currentTarget('a').id,'a');assert.equal(currentTarget('b').id,'b');console.log('PASS 两个审核面板目标按宿主会话隔离');
+await ticks[0]();await wait();assert.equal(calls.length,2);ask(a,'第二条用户消息');await ticks[0]();await wait();assert.equal(calls.length,3);assert.equal(calls[2].parent,a);await ticks[0]();assert.equal(calls.length,3);console.log('PASS self无工具新消息触发一次，空闲tick不重复也不派到别的面板');
+run(a,'pause on');ask(a,'暂停期间消息');await ticks[0]();assert.equal(calls.length,3);run(a,'pause off');await ticks[0]();await wait();assert.equal(calls.length,4);console.log('PASS 暂停不自动派单，恢复对新增消息补审一次');
+run(b,'focus agent');ask(b,'新的AI审核材料');await ticks[0]();await wait();assert.equal(calls.length,4);ask(b,'继续提供新材料');await ticks[0]();await wait();assert.equal(calls.length,5);assert(calls[4].prompt[0].text.includes('审 Agent'));assert.equal(calls[4].agentOptions.model,'m-b');console.log('PASS 审AI侧重点和模型继承按当前面板生效');
+a.session.events.push({type:'turn/start',data:{turn:2}});ask(a,'AI尚未答完');await ticks[0]();assert.equal(calls.length,5);a.session.events.push({type:'turn/end',data:{turn:2}});await ticks[0]();await wait();assert.equal(calls.length,6);console.log('PASS 等待本会话回合完成再自动审完整往返');
+
+a.session.events.push({type:'turn/end',time:Date.now(),data:{turn:3,reason:{kind:'error',error:{code:'SYNTHETIC_FAILURE',message:'a-only'}}}});
+assert.equal(JSON.parse(run(a,'ping').text).lastTurn.code,'SYNTHETIC_FAILURE');assert.equal(JSON.parse(run(b,'ping').text).lastTurn,null);console.log('PASS 主助手运行失败只影响自己的面板活性');

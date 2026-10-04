@@ -30,14 +30,14 @@ const check = (label, pass, extra = '') => {
 
 /* ── 造一个假的 home：两个线程，一个拆 3 份、一个 1 份 ─────────── */
 
-const fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'review-merge-'));
-os.homedir = () => fixtureHome;
-
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'review-merge-'));
+process.env.HOME = HOME;
+process.env.USERPROFILE = HOME;
 
 const THREAD_A = '01a0decf-9f11-7a2b-8c3d-4e5f60718293';
 const THREAD_B = '0bbbbbbb-1111-2222-3333-444455556666';
 
-const SESSIONS = path.join(fixtureHome, '.codex', 'sessions', '2026', '01', '01');
+const SESSIONS = path.join(HOME, '.codex', 'sessions', '2026', '01', '01');
 fs.mkdirSync(SESSIONS, { recursive: true });
 
 /**
@@ -76,11 +76,11 @@ const newestA = writeRollout(`rollout-2026-01-01T00-20-00-${THREAD_A}_019c0000-0
 writeRollout(`rollout-2026-01-01T00-05-00-${THREAD_B}.jsonl`, 1, 0, now - 5 * 60_000);
 
 // 索引：把两个线程都标上「项目 / 标题」，好验证 label 形状。
-fs.writeFileSync(path.join(fixtureHome, '.codex', 'session_index.jsonl'), [
+fs.writeFileSync(path.join(HOME, '.codex', 'session_index.jsonl'), [
   JSON.stringify({ id: THREAD_A, thread_name: '细节问答', updated_at: new Date(now).toISOString() }),
   JSON.stringify({ id: THREAD_B, thread_name: '试卷', updated_at: new Date(now).toISOString() }),
 ].join('\n'));
-fs.writeFileSync(path.join(fixtureHome, '.codex', '.codex-global-state.json'), JSON.stringify({
+fs.writeFileSync(path.join(HOME, '.codex', '.codex-global-state.json'), JSON.stringify({
   'local-projects': { p1: { name: '5005复习' } },
   'thread-project-assignments': { [THREAD_A]: { projectId: 'p1' }, [THREAD_B]: { projectId: 'p1' } },
 }));

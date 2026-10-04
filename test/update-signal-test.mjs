@@ -210,6 +210,11 @@ async function boot(options) {
   check('点一下 = 看过了 → 信号自己消失（且确实点到了信号）',
     clicked && updateNode(panel.tree) === undefined,
     `clicked=${clicked} after=${String(updateCount(panel.tree))}`);
+  const visibleResult = collect(panel.tree, (n) => n.props?.['data-review-detail'] !== undefined)[0];
+  check('点「查看」后留在最新评价详情，而不是跳回选对话页',
+    collect(panel.tree, (n) => n.props?.['data-review-view'] === 'results').length === 1
+      && visibleResult?.props?.['data-review-detail'] === '2',
+    `detail=${String(visibleResult?.props?.['data-review-detail'])}`);
   check('见过的条数被写进 localStorage（刷新后还算见过）',
     storage.getItem('review-seen:s1') === '3', String(storage.getItem('review-seen:s1')));
 

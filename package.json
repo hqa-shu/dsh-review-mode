@@ -1,9 +1,9 @@
 {
   "name": "@local/dsh-review-mode",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
-  "description": "Work in progress: independent, evidence-aware conversation review for DeepSeek Harness and local Codex sessions.",
+  "description": "审核模式：明确选择目标、按新用户消息自动复审，2～4条可展开洞察，独立面板不影响正常问答。",
   "icon": "./icon.svg",
   "exports": {
     ".": "./index.js",
@@ -23,6 +23,9 @@
     "rubric.js",
     "remote.js",
     "README.md",
+    "SPEC.md",
+    "CURRENT-IMPLEMENTATION.md",
+    "ITERATIONS.md",
     "README.zh-CN.md",
     "docs/",
     "examples/",
@@ -61,15 +64,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node scripts/run-tests.mjs",
+    "test": "node test/run.mjs",
+    "test:host": "node test/run.mjs --host",
     "check": "node scripts/check.mjs",
-    "prepare:runtime": "node scripts/prepare-runtime.mjs",
-    "test:integration": "node scripts/run-tests.mjs --integration"
-  },
-  "dependencies": {
-    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2"
-  },
-  "devDependencies": {
-    "js-yaml": "4.1.0"
+    "prepare:runtime": "node scripts/prepare-runtime.mjs"
   }
 }

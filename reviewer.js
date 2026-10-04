@@ -106,13 +106,14 @@ export function nextReviewEdge(prev, count) {
  * 零依赖的这一侧，`remote.js` 反过来 import 它。
  */
 let selected = null;
+const ownedTargets = new Map();
 
 /**
  * 读当前选中的目标。
  * @returns {object|null} `{kind, id, title, project, lane, at}` 或 null。
  */
-export function currentTarget() {
-  return selected;
+export function currentTarget(ownerId) {
+  return ownerId === undefined ? selected : ownedTargets.get(String(ownerId)) ?? null;
 }
 
 /**
@@ -134,7 +135,11 @@ export function setTarget(target) {
     title: typeof target.title === 'string' && target.title.length > 0 ? target.title : id,
     project: typeof target.project === 'string' ? target.project : '',
     at: Date.now(),
-  };  return selected;
+    ownerId: typeof target.ownerId==='string' ? target.ownerId : '',
+    paused: target.paused===true,
+  };
+  if(selected.ownerId)ownedTargets.set(selected.ownerId,selected);
+  return selected;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -335,7 +340,7 @@ function readDsh(entry) {
     }
     // 「对面 AI 说了几条」——「审对话」那条线的主体。工具调用不算「话」。
     if (e.type === 'assistant/message') {
-      const text = oneLine(contentText(e.data.content));
+      const text = oneLine(contentText(e.data.message?.content ?? e.data.content));
       if (text.length > 0) said.push({ turn, text });
     }
   }
@@ -1123,7 +1128,7 @@ export function evidenceFromEvents(events, lane = 'me') {
       if (text.length > 0) asks.push({ turn, text });
     }
     if (e?.type === 'assistant/message') {
-      const text = oneLine(contentText(e.data.content));
+      const text = oneLine(contentText(e.data.message?.content ?? e.data.content));
       if (text.length > 0) said.push({ turn, text });
     }
   }
