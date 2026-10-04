@@ -7,10 +7,10 @@ Date: **2026-10-04**. Runtime: Node.js `v24.19.0`, macOS arm64, SDK read from De
 - SDK preparation: **33 packages** prepared from the installed application's ASAR; no SDK files are committed.
 - Syntax, runtime package-file inclusion, basic private-data scan, and development-status checks: **passed**.
 - Existing regression suite: **36 of 41 test files passed; 5 failed**.
-- Portable smoke subset: **12 of 12 passed**. This is a subset of the suite, not additional coverage or a full health certificate.
+- Clean-checkout portable smoke subset: **8 of 8 passed** without the host SDK. This is a subset of the suite, not additional coverage or a full health certificate.
 - Model calls: **zero**. Conversation records are synthetic and home-directory discovery is redirected inside test subprocesses.
 
-The candidate, legacy-remote and step10 tests initially failed because the public test fixtures/documentation were incomplete. They passed after adding enough synthetic Codex records, a synthetic DSH record, and the public flow guide. Runtime code was unchanged. [Machine-readable results](validation-results.json) list each file.
+The candidate, legacy-remote and step10 tests initially failed because the public test fixtures/documentation were incomplete. They passed after adding enough synthetic Codex records, a synthetic DSH record, and the public flow guide. Runtime code was unchanged. Four more tests pass with the prepared host SDK but cannot run in the clean-checkout portable subset. [Machine-readable results](validation-results.json) list each file.
 
 ## Remaining failures
 
