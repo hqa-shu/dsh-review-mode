@@ -1,0 +1,24 @@
+{
+  "snapshotAt": "2026-10-03T16:45:43.441644+00:00",
+  "sourceVersion": "2.0.0",
+  "status": "work-in-progress",
+  "hostBaseline": "DeepSeek Harness Desktop 0.2.0-rc.2 / macOS arm64",
+  "runtimeFilesSha256": {
+    "index.js": "4be98f85cf42478962996fe5d21b9d6f936c9c96f7eb0de85427f4f7e526b21d",
+    "reviewer.js": "7477f5a79893c316f7b4fc5b4dfb0fa41aced90681b1ab3eedf3705f754526ea",
+    "client.js": "91517e682af8aa5918aeae6ce2f4f2fd1e823cfbefe1f44b5e41dfa4a819a9b3",
+    "remote.js": "37abb0933c0b20f6f9888dd7446adb0d2d78c8e6f08a12bbb3376a8d3cbb71ff",
+    "rubric.js": "029f745067a5fcbe245d04c09db907f6ecc52ffff3817d92bb4de766bd15d5f9",
+    "cordis.patch.yml": "ae1a349717e0a1b5adea160488869d48455ff1ecf66c190b2071523091bab769",
+    "icon.svg": "c59e58098e3b88c0ab3ba291b9997246cc8acb4db5448abe2dd6b1a472f6d446",
+    "locale/zh.json": "251f0b84e58a68291e3589b9ef4001a611d81f47b550500079b1ad9077f4dc7b",
+    "locale/en.json": "c92b5be6a367070523ed1f149b150bbd8fe8cbc39bba67cbc1ea0be1a47fcd6c"
+  },
+  "packagingChanges": [
+    "Added remote.js to package files.",
+    "Added explicit dependency, scripts and public documentation.",
+    "Normalized personal absolute paths in test fixtures.",
+    "Excluded private conversation evidence, personal screenshots and historical replay scripts."
+  ],
+  "runtimeChanges": []
+}

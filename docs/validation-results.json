@@ -1,0 +1,221 @@
+{
+  "date": "2026-10-04",
+  "node": "v24.19.0",
+  "hostSdk": "0.2.0-rc.2",
+  "modelCalls": 0,
+  "records": "synthetic, isolated from personal home",
+  "passed": 36,
+  "failed": 5,
+  "results": [
+    {
+      "file": "client-test.mjs",
+      "passed": false,
+      "status": 1
+    },
+    {
+      "file": "dedupe-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "liveness-honesty-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "liveness-scope-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "liveness-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "model-inherit-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "opening-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "panel-back-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "panel-entry-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "panel-quiet-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "panel-reserve-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "panel-rows-test.mjs",
+      "passed": false,
+      "status": 1
+    },
+    {
+      "file": "panel-scope-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "panel-state-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "panel-zebra-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "patch-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "ping-test.mjs",
+      "passed": false,
+      "status": 1
+    },
+    {
+      "file": "probe-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "qa-ask-test.mjs",
+      "passed": false,
+      "status": 1
+    },
+    {
+      "file": "qa-panel-test.mjs",
+      "passed": false,
+      "status": 1
+    },
+    {
+      "file": "schema-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "stamp-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "surface-format-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "surface-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "thread-merge-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "tool-filter-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "trigger-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "update-signal-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "ux-entry-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "a-lane-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "cache-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "candidates-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "command-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "lane-watch-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "panel-button-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "panel-feed-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "remote-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "step10-panel-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "stream-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "target-test.mjs",
+      "passed": true,
+      "status": 0
+    },
+    {
+      "file": "watch-test.mjs",
+      "passed": true,
+      "status": 0
+    }
+  ],
+  "notes": [
+    "Candidate and remote tests rerun after adding sufficient synthetic Codex/DSH fixtures.",
+    "Step10 test rerun after adding public FLOW.md.",
+    "Portable smoke subset: 12/12; these are included in the 41 files, not additional coverage."
+  ]
+}
