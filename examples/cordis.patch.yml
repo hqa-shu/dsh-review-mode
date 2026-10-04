@@ -1,0 +1,16 @@
+# Merge this override into the existing profile patch. Do not replace the profile.
+- id: review-mode
+  name: '@local/dsh-review-mode'
+  config:
+    preset: review
+    minToolCalls: 1
+    provider: spawn
+    reviewTimeoutMs: 180000
+    eventScanLimit: 4000
+    codex: false
+    codexWindowHours: 12
+    codexFiles: 2
+    codexTailBytes: 524288
+    digestBudgetChars: 7000
+    watchCodex: false
+    watchIntervalMs: 5000

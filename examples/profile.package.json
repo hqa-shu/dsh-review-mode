@@ -1,0 +1,16 @@
+{
+  "name": "dsh-profile-example",
+  "private": true,
+  "dependencies": {
+    "@local/dsh-review-mode": "link:/absolute/path/to/dsh-review-mode"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "@local/dsh-review-mode"
+      ]
+    }
+  }
+}
