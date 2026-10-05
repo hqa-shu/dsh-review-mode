@@ -105,8 +105,8 @@ await new Promise(resolve => setTimeout(resolve, 0));
 collect(tree, (n) => n.props?.['data-review-target'] === 'z1')[0].props.onClick();
 await new Promise(resolve => setTimeout(resolve, 0));
 const rows = rowNodes();
-check('AI 的原话即使被模型误写成用户原话，界面仍按原始材料标成 AI',
-  JSON.stringify(tree).includes('依据：对面 AI第1轮「压到约160行」'));
+check('旧评价没有可核对的来源标记时明确标为未逐条核对，不靠同句搜索猜说话人',
+  JSON.stringify(tree).includes('旧评价，原话未核对'));
 check('4 条评价 = 4 行（沿用上一轮：一条一行）', rows.length === 4, `→ ${rows.length} 行`);
 check('每行仍然等高 22px（斑马纹不许破坏上一轮的版式）',
   rows.every((row) => row.props.style.height === '22px' && row.props.style.whiteSpace === 'nowrap'),

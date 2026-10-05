@@ -7,7 +7,7 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 let failures = 0;
 function check(label, pass) { console.log(`${pass ? 'PASS' : 'FAIL'} ${label}`); if (!pass) failures++; }
-for (const name of ['index.js','client.js','remote.js','reviewer.js','rubric.js','cordis.patch.yml','icon.svg']) {
+for (const name of ['index.js','client.js','remote.js','reviewer.js','evidence-packet.js','rubric.js','cordis.patch.yml','icon.svg']) {
   check(`Package includes ${name}`, pkg.files.includes(name) && fs.existsSync(path.join(root, name)));
 }
 function walk(dir) {

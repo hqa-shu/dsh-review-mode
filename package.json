@@ -15,6 +15,7 @@
   },
   "files": [
     "client.js",
+    "evidence-packet.js",
     "cordis.patch.yml",
     "icon.svg",
     "index.js",
@@ -23,13 +24,24 @@
     "rubric.js",
     "remote.js",
     "README.md",
-    "SPEC.md",
     "CURRENT-IMPLEMENTATION.md",
     "ITERATIONS.md",
     "README.zh-CN.md",
-    "docs/",
+    "assets/whale-girl/",
     "examples/",
-    "scripts/prepare-runtime.mjs"
+    "scripts/embed-review-art.mjs",
+    "scripts/prepare-runtime.mjs",
+    "docs/ARCHITECTURE.md",
+    "docs/CONFIGURATION.md",
+    "docs/EVIDENCE-AND-ADVICE-DESIGN.zh-CN.md",
+    "docs/INSTALLATION.md",
+    "docs/PRIVACY.md",
+    "docs/ROADMAP.md",
+    "docs/VALIDATION-2.0-BASELINE.md",
+    "docs/VALIDATION.md",
+    "docs/source-snapshot-2.1.json",
+    "docs/source-snapshot.json",
+    "docs/validation-results.json"
   ],
   "dsh": {
     "bundle": {

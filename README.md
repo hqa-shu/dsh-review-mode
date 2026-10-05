@@ -8,7 +8,7 @@
 
 **Actively under development / 正在开发中.** This is an experimental community plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), with support for reading local Codex conversations. It is not an official DeepSeek or OpenAI product. The internal package version `2.1.0` identifies the tested development snapshot, not a stable release.
 
-Version 2.1.0 was exercised through ten user-facing edit/restart/test cycles plus five regression rounds on macOS. It shows concise, expandable insights, isolates review output from the main assistant context, restores the selected target after restart, and lets the new-result notice open the latest review. Start with the [visual, plain-language SPEC](SPEC.md); see [the current implementation contract](CURRENT-IMPLEMENTATION.md) and [iteration evidence](ITERATIONS.md) for technical details. Model judgments still require human checking.
+Version 2.1.0 was exercised through ten user-facing edit/restart/test cycles plus five regression rounds on macOS. It shows concise, expandable insights, isolates review output from the main assistant context, restores the selected target after restart, and lets the new-result notice open the latest review. See [the current implementation contract](CURRENT-IMPLEMENTATION.md) and [iteration evidence](ITERATIONS.md) for technical details. Model judgments still require human checking.
 
 [中文说明](README.zh-CN.md) · [Installation](docs/INSTALLATION.md) · [Configuration](docs/CONFIGURATION.md) · [Architecture](docs/ARCHITECTURE.md) · [Roadmap](docs/ROADMAP.md) · [Report a bug](https://github.com/hqa-shu/dsh-review-mode/issues/new/choose)
 

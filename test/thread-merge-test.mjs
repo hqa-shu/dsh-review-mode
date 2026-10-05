@@ -72,6 +72,9 @@ const now = Date.now();
 writeRollout(`rollout-2026-01-01T00-00-00-${THREAD_A}.jsonl`, 2, 1, now - 3 * 60_000);
 writeRollout(`rollout-2026-01-01T00-10-00-${THREAD_A}_019c0000-0000-0000-0000-000000000001.jsonl`, 3, 1, now - 2 * 60_000);
 const newestA = writeRollout(`rollout-2026-01-01T00-20-00-${THREAD_A}_019c0000-0000-0000-0000-000000000002.jsonl`, 4, 2, now - 60_000);
+fs.appendFileSync(newestA, `${JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user',
+  content: [{ type: 'input_text', text: '<send_user_message_question_reply>结构化回执，不是用户说的话</send_user_message_question_reply>' }] } })}\n`);
+fs.utimesSync(newestA, (now - 60_000) / 1000, (now - 60_000) / 1000);
 // 另一个线程：一份，1 条用户话。
 writeRollout(`rollout-2026-01-01T00-05-00-${THREAD_B}.jsonl`, 1, 0, now - 5 * 60_000);
 
@@ -109,6 +112,7 @@ check('时间戳取最新那个文件',
 
 const readA = readCodex(mergedA);
 check('你说 N 条 = 三份文件相加（2+3+4=9）', readA.askCount === 9, `askCount=${readA.askCount}`);
+check('结构化问答回执不算成用户原话', !readA.asks.some((item) => item.text.includes('send_user_message_question_reply')));
 check('对面 M 条 = 三份文件相加（1+1+2=4）', readA.otherCount === 4, `otherCount=${readA.otherCount}`);
 check('label 形状不变：项目 / 标题 · 你说 N 条 · 对面 M 条',
   candidateLabel(readA.title, readA.askCount, readA.otherCount) === '5005复习 / 细节问答 · 你说 9 条 · 对面 4 条',

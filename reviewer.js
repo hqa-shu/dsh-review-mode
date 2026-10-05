@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { buildReviewPacket } from './evidence-packet.js';
 
 /** 稳定身份。 */
 export const name = 'review-mode-reviewer';
@@ -327,25 +328,38 @@ function readDsh(entry) {
   const title = events.find((e) => e.type === 'session/title')?.data?.title ?? '(无标题)';
   const asks = [];
   const said = [];
+  const timeline = [];
+  const completeTurns = new Set();
   let turn = 0;
   let calls = 0;
   const cwd = events.find((e) => e.type === 'session')?.data?.header?.cwd
     ?? events.find((e) => e.type === 'session')?.data?.cwd ?? '';
-  for (const e of events) {
+  for (const [eventIndex, e] of events.entries()) {
     if (e.type === 'turn/start') turn = e.data.turn;
+    if (e.type === 'turn/end') completeTurns.add(Number(e.data?.turn ?? turn));
     if (e.type === 'tool/call') calls += 1;
     if (e.type === 'user/message' && e.data?.source?.kind === 'user') {
       const text = oneLine(contentText(e.data.content));
-      if (text.length > 0) asks.push({ turn, text });
+      if (text.length > 0) { asks.push({ turn, text }); timeline.push({ role: 'user', turn,
+        text: contentText(e.data.content), sourceKey: `dsh:${entry.id}:${e.seq ?? eventIndex}` }); }
     }
     // 「对面 AI 说了几条」——「审对话」那条线的主体。工具调用不算「话」。
     if (e.type === 'assistant/message') {
       const text = oneLine(contentText(e.data.message?.content ?? e.data.content));
-      if (text.length > 0) said.push({ turn, text });
+      if (text.length > 0) { said.push({ turn, text }); timeline.push({ role: 'ai', turn,
+        text: contentText(e.data.message?.content ?? e.data.content), sourceKey: `dsh:${entry.id}:${e.seq ?? eventIndex}` }); }
+    }
+    if (e.type === 'tool/result') {
+      const failed = Boolean(e.data?.message?.isError || e.data?.error);
+      const name = oneLine(e.data?.name ?? e.data?.toolName ?? '工具');
+      const result = oneLine(contentText(e.data?.message?.content));
+      timeline.push({ role: 'tool', turn, status: failed ? '失败' : '已返回',
+        sourceKey: `dsh:${entry.id}:${e.seq ?? eventIndex}`,
+        text: `${name}${failed ? '失败' : '返回'}${result ? `：${result}` : '（无文字结果）'}` });
     }
   }
   // 计数用显式字段，别用可能被截断的 `asks.length`（Codex 那边踩过，见 bug 17）。
-  return { title, asks, said, askCount: asks.length, otherCount: said.length, calls, turns: turn, cwd };
+  return { title, asks, said, timeline, completeTurns, askCount: asks.length, otherCount: said.length, calls, turns: turn, cwd };
 }
 
 /* ── Codex：用 Codex 自己的名字 ─────────────────────────────── */
@@ -653,6 +667,7 @@ function codexFiles(entry) {
 
 /** Codex 注入的噪声前缀。 */
 const CODEX_NOISE = ['<environment_context', '<external_codex_apps', '<user_instructions',
+  '<send_user_message_question_reply', '<in-app-browser-context', '<plugin',
   '>>> RETAINED', '>>> TRANSCRIPT', 'Host notice:', 'Retained source order:',
   'The following is the Codex agent history'];
 
@@ -664,11 +679,13 @@ const CODEX_NOISE = ['<environment_context', '<external_codex_apps', '<user_inst
  * @param {object} entry - 列表条目（合并后的，或单文件的合成条目）。
  * @returns {object} 摘要。
  */
-function readCodex(entry) {
+function readCodex(entry, { focus = false } = {}) {
   const files = codexFiles(entry);
   const asks = [];
   const did = [];
   const said = [];
+  const timeline = [];
+  let turn = 0;
   let cwd = '';
   for (const file of files) {                       // 旧 → 新
     let raw;
@@ -678,31 +695,46 @@ function readCodex(entry) {
       const cwdMatch = /"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(head);
       cwd = cwdMatch?.[1] ?? '';
     }
-    const tail = raw.subarray(Math.max(0, raw.length - 524288)).toString('utf8');
-    const lines = tail.slice(tail.indexOf('\n') + 1).split('\n').filter((l) => l.trim());
-    for (const line of lines) {
+    // Directory discovery keeps the cheap tail view. Reviewing a selected
+    // conversation reads its original records so an early constraint can be
+    // recovered; only buildReviewPacket's bounded excerpts reach the model.
+    const source = focus ? raw.toString('utf8') : raw.subarray(Math.max(0, raw.length - 524288)).toString('utf8');
+    const lines = (focus ? source : source.slice(source.indexOf('\n') + 1)).split('\n').filter((l) => l.trim());
+    for (const [lineIndex, line] of lines.entries()) {
       let rec;
       try { rec = JSON.parse(line); } catch { continue; }
       const p = rec?.payload;
       if (rec?.type === 'response_item' && p?.type === 'message' && p.role === 'user') {
         const text = oneLine(contentText(p.content));
         if (text.length > 0 && !CODEX_NOISE.some((n) => text.startsWith(n)) && !/^\[\d+\]\s+(user|assistant):/.test(text)) {
+          turn += 1;
           asks.push({ turn: 0, text: clip(text, 300) });
+          if (focus) timeline.push({ role: 'user', turn, text: contentText(p.content),
+            sourceKey: `codex:${file.id}:${lineIndex}` });
         }
       } else if (rec?.type === 'event_msg') {
         const item = p?.item;
         if (item?.type === 'CommandExecution') {
           const cmd = Array.isArray(item.command) ? item.command.join(' ') : String(item.command ?? '');
-          if (cmd.trim().length > 0) did.push(`命令 ${clip(oneLine(cmd), 110)}`);
+          if (cmd.trim().length > 0) {
+            did.push(`命令 ${clip(oneLine(cmd), 110)}`);
+            if (focus && /^(completed|failed|success|error)$/i.test(String(item.status ?? ''))) timeline.push({ role: 'tool', turn, status: String(item.status),
+              sourceKey: `codex:${file.id}:${lineIndex}`,
+              text: `命令：${oneLine(cmd)}；状态：${item.status}` });
+          }
         } else if (item?.type === 'AgentMessage') {
           const text = oneLine(contentText(item.content));
           if (text.length > 0) {
             did.push(`它说 ${clip(text, 160)}`);
             // 「对面 AI 说了几条」——「审对话」那条线的主体，和 did（动作背景）分开存。
             said.push({ turn: 0, text: clip(text, 300) });
+            if (focus) timeline.push({ role: 'ai', turn, text: contentText(item.content),
+              sourceKey: `codex:${file.id}:${lineIndex}` });
           }
         } else if (item?.type === 'McpToolCall' && (item.status === 'failed' || item.result?.isError === true)) {
           did.push(`工具失败 ${item.server ?? '?'}/${item.tool ?? '?'}`);
+          if (focus) timeline.push({ role: 'tool', turn, status: '失败', sourceKey: `codex:${file.id}:${lineIndex}`,
+            text: `工具失败：${item.server ?? '?'}/${item.tool ?? '?'}` });
         }
       }
     }
@@ -724,6 +756,7 @@ function readCodex(entry) {
     said: said.slice(-20),
     otherCount: said.length,
     did: did.slice(-14),
+    timeline,
     turns: 0,
   };
 }
@@ -1065,32 +1098,64 @@ export function conversationEvidence(kind, id, lane = 'me') {
       || c.threadId === id
       || (Array.isArray(c.files) && c.files.some((file) => file.id === id)));
     if (entry === undefined) throw new Error(`找不到那条 Codex 对话：${id}`);
-    const read = readCodex(entry);
-    return {
+    const read = readCodex(entry, { focus: true });
+    const packet = buildReviewPacket(read.timeline, wantLane, { unknownPending: true });
+    return withSourceTimeline({
       lane: wantLane,
       title: read.title,
       cwd: read.cwd,
       youSaid: read.asks.map((a) => a.text),
       otherSaid: read.said.map((a) => a.text),
       background: read.did,
+      reviewPacket: packet,
       stats: `你说 ${read.askCount} 条${read.askCount > read.asks.length ? `（证据里列出最近 ${read.asks.length} 条）` : ''}`
         + ` · 对面 ${read.otherCount} 条${read.otherCount > read.said.length ? `（列出最近 ${read.said.length} 条）` : ''}`
         + ` · 对面 ${read.did.length} 个动作 · 最后活动 ${new Date(entry.mtime).toISOString().slice(5, 16)}`,
-    };
+    }, read.timeline);
   }
   const entry = listDshSessions(SCAN_LIMIT).find((c) => c.id === id);
   if (entry === undefined) throw new Error(`找不到那个 DSH 会话：${id}`);
   const read = readDsh(entry);
-  return {
+  const packet = buildReviewPacket(read.timeline, wantLane, {
+    latestTurnComplete: Number(read.asks.at(-1)?.turn) > 0
+      ? read.completeTurns.has(read.asks.at(-1).turn) : null,
+  });
+  return withSourceTimeline({
     lane: wantLane,
     title: read.title,
     cwd: read.cwd,
     youSaid: read.asks.map((a) => (read.turns > 1 ? `第${a.turn}轮：${a.text}` : a.text)),
     otherSaid: read.said.map((a) => (read.turns > 1 ? `第${a.turn}轮：${a.text}` : a.text)),
     background: [`共 ${read.calls} 次工具调用，跨 ${read.turns} 轮`],
+    reviewPacket: packet,
     stats: `你说 ${read.askCount} 条 · 对面 ${read.otherCount} 条 · 共 ${read.calls} 次工具调用`
       + ` · 最后活动 ${new Date(entry.mtime).toISOString().slice(5, 16)}`,
-  };
+  }, read.timeline);
+}
+
+function withSourceTimeline(evidence, timeline) {
+  // The complete selected conversation stays on the host. JSON responses to
+  // the panel carry only the bounded review packet, not the entire log.
+  Object.defineProperty(evidence, 'sourceTimeline', { value: timeline });
+  return evidence;
+}
+
+/** Resolve a verified source inside the currently selected conversation. */
+export function conversationSource(kind, id, sourceKey, events = []) {
+  const evidence = kind === 'self' ? evidenceFromEvents(events)
+    : conversationEvidence(kind, id);
+  const timeline = evidence.sourceTimeline ?? [];
+  const source = timeline.find((item) => item.sourceKey === sourceKey);
+  if (!source) throw new Error('当前会话找不到这段原文');
+  const neighbor = timeline.filter((item) => item.sourceKey !== sourceKey
+    && source.turn && item.turn === source.turn && ['user', 'ai'].includes(item.role))
+    .slice(0, 3);
+  const visible = (item) => ({
+    role: item.role, turn: Number(item.turn) || null, status: item.status ?? '',
+    text: String(item.text ?? '').slice(0, 100000),
+    truncated: String(item.text ?? '').length > 100000,
+  });
+  return { source: visible(source), neighbor: neighbor.map(visible) };
 }
 
 /**
@@ -1118,28 +1183,45 @@ export function evidenceFromEvents(events, lane = 'me') {
     ?? list.find((e) => e?.type === 'session')?.data?.cwd ?? '';
   const asks = [];
   const said = [];
+  const timeline = [];
+  const completeTurns = new Set();
   let turn = 0;
   let calls = 0;
-  for (const e of list) {
+  for (const [eventIndex, e] of list.entries()) {
     if (e?.type === 'turn/start') turn = Number(e.data?.turn ?? turn);
+    if (e?.type === 'turn/end') completeTurns.add(Number(e.data?.turn ?? turn));
     if (e?.type === 'tool/call') calls += 1;
     if (e?.type === 'user/message' && e.data?.source?.kind === 'user') {
       const text = oneLine(contentText(e.data.content));
-      if (text.length > 0) asks.push({ turn, text });
+      if (text.length > 0) { asks.push({ turn, text }); timeline.push({ role: 'user', turn,
+        text: contentText(e.data.content), sourceKey: `self:${e.seq ?? eventIndex}` }); }
     }
     if (e?.type === 'assistant/message') {
       const text = oneLine(contentText(e.data.message?.content ?? e.data.content));
-      if (text.length > 0) said.push({ turn, text });
+      if (text.length > 0) { said.push({ turn, text }); timeline.push({ role: 'ai', turn,
+        text: contentText(e.data.message?.content ?? e.data.content), sourceKey: `self:${e.seq ?? eventIndex}` }); }
+    }
+    if (e?.type === 'tool/result') {
+      const failed = Boolean(e.data?.message?.isError || e.data?.error);
+      const name = oneLine(e.data?.name ?? e.data?.toolName ?? '工具');
+      const result = oneLine(contentText(e.data?.message?.content));
+      timeline.push({ role: 'tool', turn, status: failed ? '失败' : '已返回',
+        sourceKey: `self:${e.seq ?? eventIndex}`,
+        text: `${name}${failed ? '失败' : '返回'}${result ? `：${result}` : '（无文字结果）'}` });
     }
   }
   const prefix = (a) => (turn > 1 ? `第${a.turn}轮：${a.text}` : a.text);
-  return {
+  return withSourceTimeline({
     lane: wantLane,
     title,
     cwd,
     youSaid: asks.map(prefix),
     otherSaid: said.map(prefix),
     background: [`共 ${calls} 次工具调用，跨 ${turn} 轮`],
+    reviewPacket: buildReviewPacket(timeline, wantLane, {
+      latestTurnComplete: Number(asks.at(-1)?.turn) > 0
+        ? completeTurns.has(asks.at(-1).turn) : null,
+    }),
     stats: `你说 ${asks.length} 条 · 对面 ${said.length} 条 · 共 ${calls} 次工具调用`,
-  };
+  }, timeline);
 }

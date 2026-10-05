@@ -13,3 +13,7 @@ artifacts/
 .codex/
 probe-cache.json
 *credentials*
+
+# Internal design documents stay local.
+/SPEC.md
+/docs/SPEC-1.2-ARCHIVE.md
