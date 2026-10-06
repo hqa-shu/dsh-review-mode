@@ -18,4 +18,8 @@ text='合成问题二';run('dir self');await tick();assert.equal(calls.length,2)
 calls[0].resolve(output);await tick();assert.equal(events.filter(e=>e.data.reviewUpdate?.form==='notice').length,0);
 calls[1].resolve(output);await tick();assert.equal(events.filter(e=>e.data.reviewUpdate?.form==='notice').length,1);console.log('PASS 旧请求取消后迟到结果不能覆盖新请求');
 text='超时合成问题';run('dir self');await new Promise(r=>setTimeout(r,110));assert(calls[2].req.signal.aborted);assert(events.some(e=>e.data.reviewUpdate?.form==='failed' && /超时/.test(e.data.reviewUpdate?.review.message)));console.log('PASS 结果永不返回也会明确超时');
-text='停止合成问题';run('dir self');await tick();assert.equal(run('stop').kind,'success');await tick();assert(calls[3].req.signal.aborted);assert(events.some(e=>e.data.reviewUpdate?.form==='stopped'));assert(!events.some(e=>e.data.reviewUpdate?.form==='failed' && /已停止/.test(e.data.reviewUpdate?.review.message)));console.log('PASS 用户停止实际取消请求且不留下红色失败');
+text='停止合成问题';run('dir self');await tick();assert.equal(run('stop').kind,'success');await tick();assert(calls[3].req.signal.aborted);// 契约（2.1.0）：用户主动停止**不是失败**，发的是独立的 `stopped`；面板据此把「正在生成」
+// 清掉，而不是弹一条红色错误（见 index.js 的 applyEvent 与 publishReviewState）。
+assert(events.some(e=>e.data.reviewUpdate?.form==='stopped'));
+assert(!events.some(e=>e.data.reviewUpdate?.form==='failed' && /已停止/.test(e.data.reviewUpdate?.review?.message ?? '')));
+console.log('PASS 用户停止实际取消请求并清除进行中（按 stopped 而非 failed）');

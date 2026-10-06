@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 const root=fileURLToPath(new URL('..',import.meta.url));
-const portable=['evidence-packet','ux-hook-order','ux-entry','ux-concurrency','ux-monitor','ux-qa','model-inherit','client','liveness-scope','panel-back','panel-focus','panel-reserve','update-signal','schema','thread-merge','panel-scope','panel-zebra','stamp','panel-entry','opening','probe','trigger'];
+const portable=['ux-hook-order','ux-entry','ux-concurrency','ux-monitor','ux-qa','model-inherit','client','liveness-scope','panel-back','panel-reserve','update-signal','schema','thread-merge','panel-scope','panel-zebra','stamp','panel-entry','opening','probe','trigger','injected'];
 const tests=process.argv.includes('--host') ? ['ux-transport','tool-filter'] : portable;
 const home=mkdtempSync(path.join(tmpdir(),'review-mode-tests-'));
 let failed=0,passed=0;

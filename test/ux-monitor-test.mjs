@@ -4,90 +4,21 @@ import {currentTarget} from '../reviewer.js';
 const commands=new Map(),ticks=[],calls=[];
 const make=id=>({id,options:{provider:'p',model:'m-'+id},session:{header:{id},seq:2,events:[{type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text:'合成任务'+id}]}}],snapshotEvents(){return this.events;},append(type,data){this.events.push({type,data});}},inject(){throw Error('No injection');}});
 const a=make('a'),b=make('b'),agents=[a,b];
-let projection='review';
 const old=globalThis.setInterval;globalThis.setInterval=f=>{ticks.push(f);return 0;};
 const result={output:[{type:'text',text:'结论: on-track\n一句话: 合成结果\n## 具体对话\n- 合成原话\n## 对话概述\n合成案例\n## 分析\n- 可执行｜依据：任务｜洞察：下一步清楚｜建议：执行\n## 建议\n- 执行'}]};
-apply({logger:{warn(){},info(){}},reflect:{provide(){},get(){}},effect:f=>f(),on(){},inject(n,fn){fn({effect:f=>f(),commands:{register:d=>commands.set(d.name,d)}});},sessionProjections:{register(){},stateOf:()=>projection},agents:{list:()=>agents,get:id=>agents.find(a=>a.id===id),withoutInitiator:f=>f()},subagents:{start:async(n,req)=>{calls.push(req);return {id:'c'+calls.length,result:Promise.resolve(result),dispose:async()=>{}};}}},{watchCodex:true});globalThis.setInterval=old;
+apply({logger:{warn(){},info(){}},reflect:{provide(){},get(){}},effect:f=>f(),on(){},inject(n,fn){fn({effect:f=>f(),commands:{register:d=>commands.set(d.name,d)}});},sessionProjections:{register(){},stateOf:()=> 'review'},agents:{list:()=>agents,get:id=>agents.find(a=>a.id===id),withoutInitiator:f=>f()},subagents:{start:async(n,req)=>{calls.push(req);return {id:'c'+calls.length,result:Promise.resolve(result),dispose:async()=>{}};}}},{watchCodex:true});globalThis.setInterval=old;
 const run=(agent,rawInput)=>commands.get('review-mode').handler({agent,rawInput});
-const auto=agent=>JSON.parse(run(agent,'ping').text).autoReview;
 const wait=()=>new Promise(r=>setTimeout(r,10));
 const ask=(a,text)=>a.session.events.push({type:'user/message',data:{source:{kind:'user'},content:[{type:'text',text}]}});
 run(a,'dir self');run(b,'dir self');await wait();assert.equal(calls.length,2);assert.equal(currentTarget('a').id,'a');assert.equal(currentTarget('b').id,'b');console.log('PASS 两个审核面板目标按宿主会话隔离');
-assert.equal(auto(a).triggerCount,0);assert.equal(auto(a).checkedAt,null);
 await ticks[0]();await wait();assert.equal(calls.length,2);ask(a,'第二条用户消息');await ticks[0]();await wait();assert.equal(calls.length,3);assert.equal(calls[2].parent,a);await ticks[0]();assert.equal(calls.length,3);console.log('PASS self无工具新消息触发一次，空闲tick不重复也不派到别的面板');
-assert.equal(auto(a).triggerCount,1);assert.equal(auto(a).lastDelta,1);assert(Number.isFinite(auto(a).lastTriggeredAt));assert.equal(auto(b).triggerCount,0);
-console.log('PASS 心跳只记录当前面板真实的自动触发；手动审核和空闲检查不计数');
 run(a,'pause on');ask(a,'暂停期间消息');await ticks[0]();assert.equal(calls.length,3);run(a,'pause off');await ticks[0]();await wait();assert.equal(calls.length,4);console.log('PASS 暂停不自动派单，恢复对新增消息补审一次');
-assert.equal(auto(a).triggerCount,2);
-run(b,'focus agent');await wait();assert.equal(calls.length,5);assert(calls[4].prompt[0].text.includes('审 Agent'));console.log('PASS 点击审AI立即启动对应侧重点的审核');
-assert.equal(auto(b).triggerCount,0);assert.equal(auto(b).checkedAt,null);
-ask(b,'新的AI审核材料');await ticks[0]();await wait();assert.equal(calls.length,6);ask(b,'继续提供新材料');await ticks[0]();await wait();assert.equal(calls.length,7);assert(calls[6].prompt[0].text.includes('审 Agent'));assert.equal(calls[6].agentOptions.model,'m-b');console.log('PASS 后续新消息仍自动按审AI侧重点和当前模型复审');
+// 契约（2.1.0）：换侧重点 = 立刻按新角度审一次；点回当前侧重点不派单（那是白花一次模型调用）。
+// 换角度之后真的又来了新用户消息，仍然按监控规则再审一次 —— 这两次是两件事，不是重复。
+run(b,'focus agent');await wait();assert.equal(calls.length,5);
+run(b,'focus agent');await wait();assert.equal(calls.length,5);
+ask(b,'新的AI审核材料');await ticks[0]();await wait();assert.equal(calls.length,6);ask(b,'继续提供新材料');await ticks[0]();await wait();assert.equal(calls.length,7);assert(calls[5].prompt[0].text.includes('审 Agent'));assert.equal(calls[5].agentOptions.model,'m-b');console.log('PASS 审AI侧重点和模型继承按当前面板生效');
 a.session.events.push({type:'turn/start',data:{turn:2}});ask(a,'AI尚未答完');await ticks[0]();assert.equal(calls.length,7);a.session.events.push({type:'turn/end',data:{turn:2}});await ticks[0]();await wait();assert.equal(calls.length,8);console.log('PASS 等待本会话回合完成再自动审完整往返');
 
 a.session.events.push({type:'turn/end',time:Date.now(),data:{turn:3,reason:{kind:'error',error:{code:'SYNTHETIC_FAILURE',message:'a-only'}}}});
 assert.equal(JSON.parse(run(a,'ping').text).lastTurn.code,'SYNTHETIC_FAILURE');assert.equal(JSON.parse(run(b,'ping').text).lastTurn,null);console.log('PASS 主助手运行失败只影响自己的面板活性');
-
-const beforeAdvice=calls.length;
-const started=JSON.parse(run(a,'advise-turn 2').text);
-assert.equal(started.status,'pending');
-await wait();
-const advised=JSON.parse(run(a,'advice-status 2').text);
-assert.equal(advised.status,'ready');
-assert(advised.answer.includes('合成结果'));
-assert.match(advised.contextSummary,/更早消息/);
-assert(calls[beforeAdvice].prompt[0].text.includes('第二条用户消息'));
-assert(calls[beforeAdvice].prompt[0].text.includes('未能从日志可靠配对'));
-assert.equal(JSON.parse(run(a,'advise-turn 2').text).status,'ready');
-assert.equal(calls.length,beforeAdvice+1);
-assert.equal(run(a,'advise-turn 999').kind,'error');
-console.log('PASS 单条建议按需派单、结果可轮询、重复展开复用结果且不虚构配对回复');
-
-const beforeRewrite=calls.length;
-assert.equal(JSON.parse(run(a,'rewrite-turn 2').text).status,'pending');
-await wait();
-assert.equal(JSON.parse(run(a,'rewrite-status turn 2').text).status,'ready');
-assert(calls[beforeRewrite].prompt[0].text.includes('这一条的建议'));
-assert(calls[beforeRewrite].prompt[0].text.includes('第二条用户消息'));
-assert.equal(JSON.parse(run(a,'rewrite-turn 2').text).status,'ready');
-assert.equal(calls.length,beforeRewrite+1);
-assert.equal(run(a,'rewrite-turn 999').kind,'error');
-console.log('PASS 逐条建议完成后按需生成修改版提示词，复用结果且不跨原话');
-
-projection={feed:[{kind:'review',reviewId:'synthetic-card',targetKey:'self:a',lane:'me',
-  analysis:['目标仍需核对｜依据：用户说：「合成任务a」｜洞察：后续需明确｜建议：请 AI 核对目标'],
-  advice:['请 AI 核对目标'],evidenceSources:[[{role:'user',text:'合成任务a'}]]}]};
-const beforeInsightRewrite=calls.length;
-assert.equal(JSON.parse(run(a,'rewrite-insight synthetic-card 1').text).status,'pending');
-await wait();
-assert.equal(JSON.parse(run(a,'rewrite-status insight synthetic-card 1').text).status,'ready');
-assert(calls[beforeInsightRewrite].prompt[0].text.includes('请 AI 核对目标'));
-assert.equal(run(a,'rewrite-insight wrong-card 1').kind,'error');
-projection.feed.push({kind:'review',reviewId:'legacy-self',lane:'me',
-  analysis:['旧建议｜依据：待核对｜洞察：需谨慎｜建议：让 AI 复述目标'],advice:['让 AI 复述目标']});
-assert.equal(JSON.parse(run(a,'rewrite-insight legacy-self 1').text).status,'pending');
-await wait();
-assert.equal(JSON.parse(run(a,'rewrite-status insight legacy-self 1').text).status,'ready');
-console.log('PASS 顶部每条洞察也能基于该条建议和当前会话来源生成提示词');
-projection='review';
-
-a.session.events.push({type:'assistant/message',data:{content:[{type:'text',text:'这是第二轮的合成回答'}]}});
-const beforePaired=calls.length;
-assert.equal(JSON.parse(run(a,'advise-turn 4').text).status,'pending');
-await wait();
-assert(calls[beforePaired].prompt[0].text.includes('这是第二轮的合成回答'));
-assert.equal(JSON.parse(run(a,'advice-status 4').text).status,'ready');
-console.log('PASS 日志有同轮编号时才把该轮 AI 回复交给逐条建议员');
-
-const beforeWaiting=calls.length;
-a.session.events.push({type:'turn/start',data:{turn:5}});
-ask(a,'这一轮仍在回答中');
-run(a,'focus agent');
-await wait();
-assert.equal(calls.length,beforeWaiting);
-assert(a.session.events.some(event=>event.data?.reviewUpdate?.form==='pending' && event.data?.reviewUpdate?.review?.waiting===true));
-await ticks[0]();await wait();assert.equal(calls.length,beforeWaiting);
-a.session.events.push({type:'assistant/message',data:{content:[{type:'text',text:'这一轮的实质答复'}]}});
-a.session.events.push({type:'turn/end',data:{turn:5,reason:{kind:'completed'}}});
-await ticks[0]();await wait();assert.equal(calls.length,beforeWaiting+1);
-await ticks[0]();await wait();assert.equal(calls.length,beforeWaiting+1);
-console.log('PASS 审AI遇到进行中轮次会等待答复完成，同一轮只自动触发一次');

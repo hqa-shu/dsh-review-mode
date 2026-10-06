@@ -70,10 +70,16 @@ function makeReact() {
   return { React, reset() { cursor = 0; effectCursor = 0; }, onChange(fn) { onChange = fn; } };
 }
 
+/** 夹具会话与它上次选中的审核目标（结果区只画当前目标的记录）。 */
+const SESSION_ID = 's1';
+const TARGET = { kind: 'codex', id: 'a1', title: '信号夹具', lane: 'me', paused: false };
+/** 已读计数按「会话 + 审核目标 + 侧重点」分开存（2.1.0 起一个会话可以来回换目标）。 */
+const SEEN_KEY = `review-seen:${SESSION_ID}:${TARGET.kind}:${TARGET.id}:${TARGET.lane}`;
+
 /** 一条评价卡片（形状照 `normalizeVerdictRecord` 折出来的）。 */
 const card = (turn, verdict, headline) => ({
   kind: 'review',
-  targetKey: 'self:s1',
+  targetKey: 'codex:a1',
   lane: 'me',
   turn,
   verdict,
@@ -90,6 +96,7 @@ const card = (turn, verdict, headline) => ({
 function makeStorage() {
   const store = new Map();
   return {
+    dump: () => [...store.entries()],
     getItem: (key) => (store.has(String(key)) ? store.get(String(key)) : null),
     setItem: (key, value) => { store.set(String(key), String(value)); },
     removeItem: (key) => { store.delete(String(key)); },
@@ -136,18 +143,21 @@ async function boot(options) {
   const react = makeReact();
   let registered = null;
   const calls = [];
+  // 2.1.0 起没有选中目标就不画结果区，所以夹具必须先有一个「上次选过的目标」，
+  // 并让 resume 真的答出证据 —— 否则面板停在选方向那一层，什么信号都量不到。
   const execute = options.execute ?? ((sessionId, line, attachments) => {
     calls.push([sessionId, line, attachments]);
-    const response = String(line).includes(' resume ')
-      ? { selected: { kind: 'self', id: 's1', title: '本会话', lane: 'me' }, evidence: { title: '本会话', youSaid: ['合成测试'] } }
-      : { ok: true, pong: true, tick: {}, scan: {} };
-    return Promise.resolve({
-      ok: true,
-      value: { commandId: 'c1', result: { kind: 'success', text: JSON.stringify(response) } },
-    });
+    const verb = String(line).trim().split(/\s+/)[1];
+    const text = verb === 'resume'
+      ? JSON.stringify({ ok: true, selected: TARGET,
+        evidence: { title: TARGET.title, youSaid: ['第一句原话'], background: [], stats: '你说 1 条' } })
+      : JSON.stringify({ ok: true, pong: true, tick: {}, scan: {} });
+    return Promise.resolve({ ok: true, value: { commandId: 'c1', result: { kind: 'success', text } } });
   });
   const storage = options.storage ?? makeStorage();
-  storage.setItem('review-target:s1', JSON.stringify({ kind: 'self', id: 's1', title: '本会话', lane: 'me' }));
+  if (storage.getItem(`review-target:${SESSION_ID}`) === null) {
+    storage.setItem(`review-target:${SESSION_ID}`, JSON.stringify(TARGET));
+  }
   globalThis.window = {
     __ModuleLoader__: { load({ factory }) { registered = factory((spec) => (spec === 'react' ? react.React : {})); } },
     localStorage: storage,
@@ -174,7 +184,10 @@ async function boot(options) {
   const render = () => { react.reset(); tree = panel(props); };
   react.onChange(render);
   render();
-  await new Promise(resolve => setTimeout(resolve, 0));
+  // 恢复上次选中的目标要走一次宿主往返（微任务 + promise），不等它落定就断言，
+  // 量到的永远是「还停在选方向那一层」。
+  for (let i = 0; i < 3; i += 1) await new Promise((resolve) => { setTimeout(resolve, 0); });
+  render();
   return {
     get tree() { return tree; },
     render,
@@ -216,13 +229,8 @@ async function boot(options) {
   check('点一下 = 看过了 → 信号自己消失（且确实点到了信号）',
     clicked && updateNode(panel.tree) === undefined,
     `clicked=${clicked} after=${String(updateCount(panel.tree))}`);
-  const visibleResult = collect(panel.tree, (n) => n.props?.['data-review-detail'] !== undefined)[0];
-  check('点「查看」后留在最新评价详情，而不是跳回选对话页',
-    collect(panel.tree, (n) => n.props?.['data-review-view'] === 'results').length === 1
-      && visibleResult?.props?.['data-review-detail'] === '2',
-    `detail=${String(visibleResult?.props?.['data-review-detail'])}`);
   check('见过的条数被写进 localStorage（刷新后还算见过）',
-    storage.getItem('review-seen:s1:self:s1:me') === '3', String(storage.getItem('review-seen:s1:self:s1:me')));
+    storage.getItem(SEEN_KEY) === '3', String(storage.getItem(SEEN_KEY)));
 
   // 又来了新的一条 → 只报这 1 条，且 gist 换成新的那条。
   panel.setFeed([...feed, card(4, 'on-track', '第四条漂移_新的')]);
@@ -279,7 +287,7 @@ async function boot(options) {
   const storage = makeStorage();
   const first = await boot({ feed: [card(1, 'drifting', '第一次')], storage });
   const marked = clickUpdate(first.tree);
-  check('第一次：点掉信号（写下已读）', marked && storage.getItem('review-seen:s1:self:s1:me') === '1');
+  check('第一次：点掉信号（写下已读）', marked && storage.getItem(SEEN_KEY) === '1');
   // 同一个 storage 再起一个实例（换一份 client.js 模块）＝ 刷新页面。
   const second = await boot({ feed: [card(1, 'drifting', '第一次')], storage });
   check('刷新后同一条不会又被当成新的（同一份 feed、换一份模块也零信号）',

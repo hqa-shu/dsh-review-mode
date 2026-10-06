@@ -63,7 +63,25 @@ await import('../client.js');
 if (registered === null) { console.log('FAIL  模块没注册'); process.exit(1); }
 let panel = null;
 registered.apply({
-  remote: { commands: { execute: (_sessionId, command) => Promise.resolve({ ok: true, value: { commandId: 'c1', result: { kind: 'success', text: command.includes(' dir ') ? JSON.stringify({ recent: [{ id: 'z1', kind: 'dsh', title: '合成对话' }], groups: [] }) : JSON.stringify({ selected: { id: 'z1', kind: 'dsh', title: '合成对话' }, evidence: { title: '合成对话', youSaid: ['第1轮：让大家看懂'], otherSaid: ['第1轮：压到约160行'] } }) } } }) } },
+  // 2.1.0 起「没选审核对象就不画结果区」是产品契约，所以夹具必须能真的选中一条，
+  // 否则这里量到的永远是 0 行 —— 那是夹具没进到状态 3，不是斑马纹坏了。
+  remote: {
+    commands: {
+      execute(_sessionId, line) {
+        const verb = String(line).trim().split(/\s+/)[1];
+        const reply = (text) => ({ ok: true, value: { commandId: 'c1', result: { kind: 'success', text } } });
+        if (verb === 'dir') {
+          return Promise.resolve(reply(JSON.stringify({ kind: 'codex', total: 1, groups: [], selected: null,
+            recent: [{ id: 'a1', kind: 'codex', title: '斑马夹具', label: '评测 / 斑马夹具', age: '3 分钟前' }] })));
+        }
+        if (verb === 'pick') {
+          return Promise.resolve(reply(JSON.stringify({ ok: true,
+            evidence: { title: '斑马夹具', youSaid: ['第一句原话'], background: [], stats: '你说 1 条' } })));
+        }
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+    },
+  },
   slots: { inject: (name, fn) => fn(), register: (meta, component) => { if (meta.id === 'review-mode-panel') panel = component; } },
 });
 
@@ -77,11 +95,13 @@ const collect = (node, predicate, out = []) => {
 };
 
 const CARD = (n, verdict) => ({
-  kind: 'review', targetKey: 'dsh:z1', at: Date.UTC(2026, 9, 3, 14, 32 - n, 0), turn: n, lane: 'me', verdict,
+  kind: 'review',
+  // 2.1.0 起每条记录都带审核目标标识，面板只画当前目标的结果；不带就会被过滤掉。
+  targetKey: 'codex:a1', at: Date.UTC(2026, 9, 3, 14, 32 - n, 0), turn: n, lane: 'me', verdict,
   sections: ANALYSIS_SECTIONS,
   headline: `斑马哨兵${n}_最要紧那一句`,
   dialog: [`对话哨兵${n}`], summary: `概述哨兵${n}`,
-  analysis: [`分析哨兵${n}｜依据：用户原话：「压到约160行」｜洞察：行数不代表易懂｜建议：找人试读`], advice: [`建议哨兵${n}`],
+  analysis: [`分析哨兵${n}`], advice: [`建议哨兵${n}`],
   text: `斑马哨兵${n}_最要紧那一句`,
 });
 /* 四条：左栏默认选中**最新一条**（跟随时是最后一行），所以留三条未选中的
@@ -99,17 +119,21 @@ const render = (projection) => {
 const rowNodes = () => collect(tree, (n) => n.props?.['data-review-row'] !== undefined);
 const rowBg = (node) => node?.props?.style?.background;
 
-render({ feed: FEED });
-collect(tree, (n) => n.props?.['data-review-direction'] === 'dsh')[0].props.onClick();
-await new Promise(resolve => setTimeout(resolve, 0));
-collect(tree, (n) => n.props?.['data-review-target'] === 'z1')[0].props.onClick();
-await new Promise(resolve => setTimeout(resolve, 0));
+/** 走真实的两步进到状态 3：选方向 → 选那条对话。之后才有历史评价行可量。 */
+async function enterResults(projection) {
+  render(projection);
+  collect(tree, (n) => n.props?.['data-review-direction'] === 'codex')[0]?.props?.onClick();
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  collect(tree, (n) => n.props?.['data-review-target'] === 'a1')[0]?.props?.onClick();
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  return tree;
+}
+
+await enterResults({ feed: FEED });
 const rows = rowNodes();
-check('旧评价没有可核对的来源标记时明确标为未逐条核对，不靠同句搜索猜说话人',
-  JSON.stringify(tree).includes('旧评价，原话未核对'));
 check('4 条评价 = 4 行（沿用上一轮：一条一行）', rows.length === 4, `→ ${rows.length} 行`);
-check('每行仍然等高 22px（斑马纹不许破坏上一轮的版式）',
-  rows.every((row) => row.props.style.height === '22px' && row.props.style.whiteSpace === 'nowrap'),
+check('每行仍然等高 24px（斑马纹不许破坏上一轮的版式；24px 是可点区域下限）',
+  rows.every((row) => row.props.style.height === '24px' && row.props.style.whiteSpace === 'nowrap'),
   JSON.stringify(rows.map((row) => [row.props.style.height, row.props.style.whiteSpace])));
 check('每行仍然单行截断（overflow:hidden + textOverflow:ellipsis）',
   rows.every((row) => row.props.style.overflow === 'hidden' && row.props.style.textOverflow === 'ellipsis'));

@@ -2286,7 +2286,13 @@ export function apply(ctx, config) {
       `被审对象：${evidence.title}。原话编号：${number}${row.turn ? `，日志轮次：${row.turn}` : ''}。`,
       `本次范围：${context.summary}。`,context.promptText,
       '## 输出要求',
-      '只给这条对话 1 到 2 项具体建议，先写“观察：”，再写“建议：”。',
+      '只给这条对话 1 到 2 项具体建议。每项分三行写，每行以标签开头：“观察：”“建议：”“验收：”；两项之间空一行，不加编号。',
+      '观察说这一条**实际发生了什么**（引原话）；建议是**可以直接照做的一步**，最好能改写成一句能发出去的话；验收说**怎么算做到了**。',
+      '示例（照这个形状写，别照抄内容）：',
+      '观察：你说「教我 setting 里怎么设置」，没说是哪个客户端、要设哪一项；上一轮还在问 Docker，话题断开了。',
+      '建议：改成一句自足的指令，如「Claude 桌面版的设置里怎么配 MCP」，并说明想达到的效果。',
+      '验收：AI 不用先反问界面，就能直接给出步骤。',
+      '后面的消息里已经自己解决掉的问题，不要再当成建议提出来；确实还没解决才写。',
       '审我侧重用户表达和推理；审AI侧重 AI 对这条请求的回应；审对话侧重双方往返。',
       '没有可靠配对的 AI 回复时，只评论用户原话，并说明无法判断 AI 是否回应得当。',
       '后续修正只能用来核查该问题是否已解决，不能说成用户当时就知道；没有看到结果时写未知。',
@@ -2479,6 +2485,13 @@ export function apply(ctx, config) {
           stopReview: () => {
             directedRuns.get(invocation?.agent)?.controller.abort(new Error('已停止本次审核'));
             return {kind:'success',text:'已停止本次审核'};
+          },
+          // 切换侧重点会**立刻**审一次。监控游标按「目标+侧重点」记账，换了侧重点就等于换了
+          // 一把新游标；不把它推到当下，紧跟着的那条新消息会被当成「新增」再审一次 ——
+          // 一次点击两次模型调用。这里顺手把游标对齐到刚审过的那个计数。
+          seedWatch: (agent, target, count) => {
+            if (!agent || !target) return;
+            rememberWatch(agent, `${target.kind}:${target.id}:${target.lane}`, count, false, 0, false);
           },
         }),
       }), 'review-mode.command()');
@@ -3507,14 +3520,21 @@ function runPanelCommand(ctx, agent, rawInput, liveness, deps) {
       if(verb==='focus' && target.lane!==parts[1])deps?.stopReview?.();
       const selected=setTarget({...target,...(verb==='pause' ? {paused:parts[1]!=='off'} : {lane:parts[1]})});
       const evidence=selected.kind==='self' ? evidenceFromEvents(agent.session.snapshotEvents(),selected.lane) : conversationEvidence(selected.kind,selected.id,selected.lane);
-      if (verb === 'focus' && typeof deps?.startReview === 'function') {
+      // 点的还是当前这条侧重点时**不派单**：那是一次纯浪费的模型调用，
+      // 想重来有「重新审核」。只有真的换了角度才值得立刻重审。
+      const laneChanged = verb === 'focus' && target.lane !== selected.lane;
+      if (laneChanged && typeof deps?.startReview === 'function') {
         deps.startReview({
           lane: selected.lane,
           promptText: renderEvidencePrompt(evidence, selected.lane),
           label: `审核 · ${LANE_LABELS[selected.lane]} · ${clip(evidence.title, 40)}`,
         });
+        const count = selected.kind === 'codex'
+          ? Number(String(evidence.stats).match(/你说 (\d+) 条/)?.[1] ?? evidence.youSaid.length)
+          : evidence.youSaid.length;
+        deps?.seedWatch?.(agent, selected, count);
       }
-      return {kind:'success',text:JSON.stringify({selected,evidence,started:verb==='focus'})};
+      return {kind:'success',text:JSON.stringify({selected,evidence,started:laneChanged})};
     }
     if (verb === 'refresh') {
       const target=currentTarget(agent?.id);
